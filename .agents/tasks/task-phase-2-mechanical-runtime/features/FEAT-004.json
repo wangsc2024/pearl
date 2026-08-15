@@ -1,0 +1,38 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Implement pearl-guard crate: the pre/post guard engine that enforces Article 7 (fail-closed). Guards are evaluated before and after task execution. Each guard is a registered capability of type Guard that gets invoked via the script runtime. The engine evaluates guards in order, and if any guard denies, the operation is blocked. Fail-closed: if a guard cannot be reached or crashes, the operation is denied. Reference: small_daily_tasks hooks/pre_bash_guard.py pattern and daily_rust/agentflow-harness-rust src/policy.rs PolicyGuard pattern.",
+  "status": "in_progress",
+  "steps": [
+    "Create crates/pearl-guard/Cargo.toml depending on pearl-core, pearl-governance (CapabilityManifest, OnError), pearl-runtime (RuntimeAdapter, ScriptSpec, RuntimeResult), serde, serde_json, thiserror, chrono. Use workspace.dependencies.",
+    "Add pearl-guard to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-guard = { path = 'crates/pearl-guard' } to [workspace.dependencies].",
+    "Create crates/pearl-guard/src/lib.rs with module doc explaining Article 7 enforcement: guards fail-closed, hooks fail-open, and this crate makes that distinction structural.",
+    "Define GuardVerdict enum: Allow { reason: Option<String> }, Deny { reason: String, guard_id: String }.",
+    "Define GuardContext struct: the input to a guard evaluation - task_id, capability_id, command (the shell command or script being guarded), environment (BTreeMap), execution_phase (Pre or Post).",
+    "Define ExecutionPhase enum: Pre (before execution), Post (after execution, before verification).",
+    "Implement GuardRule struct representing one guard rule (inline, not requiring a subprocess): id, patterns (Vec<regex::Regex> or Vec<String>), reason, tag, phase.",
+    "Implement InlineGuardEngine for fast regex-based guards (like pre_bash_guard.py rules) that operate without spawning a subprocess. Rules are loaded from a GuardRuleSet (Vec<GuardRule>). Method: evaluate(context: &GuardContext) -> GuardVerdict.",
+    "Implement ScriptGuardEngine for guards that are external scripts (capabilities of type Guard). Method: evaluate(context: &GuardContext, manifest: &CapabilityManifest) -> GuardVerdict. This invokes the guard script with context as JSON input, reads the verdict from stdout JSON, and enforces fail-closed (crash/timeout/no-output => Deny).",
+    "Implement GuardChain that holds multiple guards (inline + script) and evaluates them in order. First Deny wins. All Allow => Allow. Any error => Deny (fail-closed).",
+    "Implement default_rules() that returns the standard set of inline guard rules matching the reference patterns: cloud-api-guard (6 LLM API hosts), destructive-rm, force-push-main, no-verify-smuggle, sensitive-env-read, sensitive-exfil.",
+    "Write comprehensive tests: inline guard blocks destructive rm, inline guard allows safe commands, fail-closed on error, GuardChain short-circuits on first Deny, default rules match reference patterns from small_daily_tasks.",
+    "Ensure cargo test --workspace passes, clippy -D warnings clean, fmt clean."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p pearl-guard succeeds",
+    "All tests in pearl-guard pass",
+    "InlineGuardEngine correctly blocks commands matching destructive patterns",
+    "InlineGuardEngine allows safe commands",
+    "GuardChain enforces fail-closed (crash/error => Deny)",
+    "Default rules block cloud LLM API calls",
+    "cargo clippy --workspace --all-targets -- -D warnings passes",
+    "cargo fmt --all --check passes"
+  ],
+  "verification": [
+    "cargo test -p pearl-guard",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all --check"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
