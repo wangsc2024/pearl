@@ -2,7 +2,7 @@
   "id": "FEAT-004",
   "type": "feat",
   "description": "Implement pearl-guard crate: the pre/post guard engine that enforces Article 7 (fail-closed). Guards are evaluated before and after task execution. Each guard is a registered capability of type Guard that gets invoked via the script runtime. The engine evaluates guards in order, and if any guard denies, the operation is blocked. Fail-closed: if a guard cannot be reached or crashes, the operation is denied. Reference: small_daily_tasks hooks/pre_bash_guard.py pattern and daily_rust/agentflow-harness-rust src/policy.rs PolicyGuard pattern.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create crates/pearl-guard/Cargo.toml depending on pearl-core, pearl-governance (CapabilityManifest, OnError), pearl-runtime (RuntimeAdapter, ScriptSpec, RuntimeResult), serde, serde_json, thiserror, chrono. Use workspace.dependencies.",
     "Add pearl-guard to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-guard = { path = 'crates/pearl-guard' } to [workspace.dependencies].",
@@ -34,5 +34,5 @@
     "cargo fmt --all --check"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All 344 workspace tests pass (41 new in pearl-guard, 303 existing unchanged). Clippy clean. Fmt clean. The regex crate was added directly to pearl-guard's Cargo.toml as instructed (not as a workspace dependency). InlineGuardEngine provides fast regex evaluation matching all 6 reference patterns from pre_bash_guard.py. ScriptGuardEngine delegates to RuntimeAdapter with fail-closed semantics. GuardChain composes both strategies with first-deny-wins ordering."
 }
