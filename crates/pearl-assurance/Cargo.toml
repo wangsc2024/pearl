@@ -1,0 +1,16 @@
+[package]
+name = "pearl-assurance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Assurance Engine: runs verification checks after execution to confirm task success (SS 32)."
+
+[dependencies]
+pearl-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_yaml.workspace = true

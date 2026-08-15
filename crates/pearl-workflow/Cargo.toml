@@ -1,0 +1,18 @@
+[package]
+name = "pearl-workflow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Workflow Engine: declarative YAML-defined step sequences with run/parallel/verify/effect (SS 40-41)."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-planner.workspace = true
+pearl-plan-compiler.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

@@ -1,0 +1,20 @@
+[package]
+name = "pearl-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Executor: executes compiled plans step by step with checkpoint/resume (SS 31, 41)."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-planner.workspace = true
+pearl-plan-compiler.workspace = true
+pearl-events.workspace = true
+serde.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]

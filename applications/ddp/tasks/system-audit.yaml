@@ -1,0 +1,54 @@
+# System Audit Task Specification
+# Performs a system health and governance audit.
+
+id: task.system-audit
+version: 1
+name: System Audit
+description: |
+  Runs Constitution compliance checks, verifies capability manifests,
+  and reports on system health metrics. Produces an audit report.
+
+precision_class: P0
+quality:
+  deterministic: true
+  verifiable: true
+
+workflow:
+  steps:
+    - id: check-manifests
+      capability: script.manifest-validator
+      step_type: run
+      timeout_secs: 60
+
+    - id: check-constitution
+      capability: script.constitution-gate
+      step_type: run
+      timeout_secs: 30
+
+    - id: check-health
+      capability: script.health-probe
+      step_type: run
+      timeout_secs: 30
+
+    - id: compile-report
+      capability: script.audit-report
+      step_type: run
+      depends_on: [check-manifests, check-constitution, check-health]
+      timeout_secs: 30
+
+    - id: verify-report
+      capability: verifier.audit-report-schema
+      step_type: verify
+      depends_on: [compile-report]
+      timeout_secs: 10
+
+assurance:
+  checks:
+    - name: schema-validation
+      kind: schema_validation
+      schema: audit-report-v1
+      evidence_required: true
+    - name: no-critical-violations
+      kind: script_verifier
+      script_path: checks/verify-no-critical.sh
+      evidence_required: true

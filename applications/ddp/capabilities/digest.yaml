@@ -1,0 +1,91 @@
+# Capability manifests for the Daily Digest workflow
+
+---
+id: script.fetch-news
+version: 1
+type: script
+description: Fetches news from configured RSS/API sources.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 60
+
+---
+id: script.fetch-weather
+version: 1
+type: script
+description: Fetches current weather data from weather API.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: agent.compose-digest
+version: 1
+type: agent
+description: Composes a daily digest from fetched data sources using LLM.
+execution:
+  kind: agent
+  runtime: openai_compatible
+quality:
+  deterministic: false
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 120
+
+---
+id: verifier.digest-schema
+version: 1
+type: verifier
+description: Validates digest output against the daily-digest-output-v1 schema.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+schemas:
+  input: daily-digest-output-v1
+  output: verification-result-v1
+timeout_seconds: 30
+
+---
+id: tool.send-ntfy
+version: 1
+type: tool
+description: Sends digest notification via ntfy.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: false
+risk:
+  side_effect: true
+  idempotency:
+    key_template: "ntfy:digest:{date}"
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30

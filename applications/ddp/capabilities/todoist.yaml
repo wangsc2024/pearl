@@ -1,0 +1,72 @@
+# Capability manifests for the Todoist Ingress workflow
+
+---
+id: script.todoist-query
+version: 1
+type: script
+description: Queries Todoist API for today's active tasks.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: script.todoist-overdue
+version: 1
+type: script
+description: Queries Todoist API for overdue tasks.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: script.merge-task-lists
+version: 1
+type: script
+description: Merges multiple task lists into a unified structure.
+execution:
+  kind: script
+  runtime: rust
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 10
+
+---
+id: verifier.task-list-schema
+version: 1
+type: verifier
+description: Validates task list output against task-list-v1 schema.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+schemas:
+  input: task-list-v1
+  output: verification-result-v1
+timeout_seconds: 10

@@ -1,0 +1,63 @@
+# Daily Digest Task Specification
+# Produces a daily briefing from multiple news and data sources.
+
+id: task.daily-digest
+version: 1
+name: Daily Digest
+description: |
+  Aggregates news, weather, and task data into a structured daily briefing.
+  Steps are ordered by dependency; parallel fetch steps run concurrently.
+
+precision_class: P1
+quality:
+  deterministic: false
+  verifiable: true
+
+workflow:
+  steps:
+    - id: fetch-news
+      capability: script.fetch-news
+      step_type: parallel
+      parallel_group: fetch
+      timeout_secs: 60
+
+    - id: fetch-weather
+      capability: script.fetch-weather
+      step_type: parallel
+      parallel_group: fetch
+      timeout_secs: 30
+
+    - id: fetch-tasks
+      capability: script.todoist-query
+      step_type: parallel
+      parallel_group: fetch
+      timeout_secs: 30
+
+    - id: compose
+      capability: agent.compose-digest
+      step_type: run
+      depends_on: [fetch-news, fetch-weather, fetch-tasks]
+      timeout_secs: 120
+
+    - id: verify-output
+      capability: verifier.digest-schema
+      step_type: verify
+      depends_on: [compose]
+      timeout_secs: 30
+
+    - id: send-notification
+      capability: tool.send-ntfy
+      step_type: effect
+      depends_on: [verify-output]
+      timeout_secs: 30
+
+assurance:
+  checks:
+    - name: schema-validation
+      kind: schema_validation
+      schema: daily-digest-output-v1
+      evidence_required: true
+    - name: content-completeness
+      kind: script_verifier
+      script_path: checks/verify-digest-sections.sh
+      evidence_required: true

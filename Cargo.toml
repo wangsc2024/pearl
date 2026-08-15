@@ -14,6 +14,12 @@ members = [
     "crates/pearl-guard",
     "crates/pearl-scheduler",
     "crates/pearl-router",
+    "crates/pearl-planner",
+    "crates/pearl-plan-compiler",
+    "crates/pearl-assurance",
+    "crates/pearl-executor",
+    "crates/pearl-workflow",
+    "crates/pearl-policy",
     "apps/pearl-cli",
 ]
 
@@ -39,6 +45,12 @@ pearl-capabilities = { path = "crates/pearl-capabilities" }
 pearl-guard = { path = "crates/pearl-guard" }
 pearl-scheduler = { path = "crates/pearl-scheduler" }
 pearl-router = { path = "crates/pearl-router" }
+pearl-planner = { path = "crates/pearl-planner" }
+pearl-plan-compiler = { path = "crates/pearl-plan-compiler" }
+pearl-assurance = { path = "crates/pearl-assurance" }
+pearl-executor = { path = "crates/pearl-executor" }
+pearl-workflow = { path = "crates/pearl-workflow" }
+pearl-policy = { path = "crates/pearl-policy" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

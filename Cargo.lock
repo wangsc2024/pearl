@@ -497,6 +497,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "pearl-assurance"
+version = "0.1.0"
+dependencies = [
+ "pearl-core",
+ "serde",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "pearl-capabilities"
 version = "0.1.0"
 dependencies = [
@@ -562,6 +572,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-executor"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pearl-core",
+ "pearl-events",
+ "pearl-plan-compiler",
+ "pearl-planner",
+ "serde",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "pearl-governance"
 version = "0.1.0"
 dependencies = [
@@ -598,6 +622,35 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "pearl-plan-compiler"
+version = "0.1.0"
+dependencies = [
+ "pearl-core",
+ "pearl-planner",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "pearl-planner"
+version = "0.1.0"
+dependencies = [
+ "pearl-core",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "pearl-policy"
+version = "0.1.0"
+dependencies = [
+ "pearl-core",
+ "serde",
+ "serde_yaml",
+ "thiserror",
 ]
 
 [[package]]
@@ -691,6 +744,18 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "pearl-workflow"
+version = "0.1.0"
+dependencies = [
+ "pearl-core",
+ "pearl-plan-compiler",
+ "pearl-planner",
+ "serde",
+ "serde_yaml",
+ "thiserror",
 ]
 
 [[package]]

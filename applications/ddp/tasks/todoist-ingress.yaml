@@ -1,0 +1,49 @@
+# Todoist Ingress Task Specification
+# Fetches and processes tasks from Todoist for the daily digest.
+
+id: task.todoist-ingress
+version: 1
+name: Todoist Ingress
+description: |
+  Queries Todoist API for today's tasks, overdue items, and upcoming deadlines.
+  Produces a structured task summary for the digest composer.
+
+precision_class: P0
+quality:
+  deterministic: true
+  verifiable: true
+
+workflow:
+  steps:
+    - id: fetch-today
+      capability: script.todoist-query
+      step_type: run
+      timeout_secs: 30
+
+    - id: fetch-overdue
+      capability: script.todoist-overdue
+      step_type: run
+      timeout_secs: 30
+
+    - id: merge-tasks
+      capability: script.merge-task-lists
+      step_type: run
+      depends_on: [fetch-today, fetch-overdue]
+      timeout_secs: 10
+
+    - id: verify-schema
+      capability: verifier.task-list-schema
+      step_type: verify
+      depends_on: [merge-tasks]
+      timeout_secs: 10
+
+assurance:
+  checks:
+    - name: schema-validation
+      kind: schema_validation
+      schema: task-list-v1
+      evidence_required: true
+    - name: non-empty-output
+      kind: script_verifier
+      script_path: checks/verify-non-empty.sh
+      evidence_required: false

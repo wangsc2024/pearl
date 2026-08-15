@@ -1,0 +1,16 @@
+[package]
+name = "pearl-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy Engine: rules that are NOT in prompts -- conditions, approval, autonomy level (SS 45, Article 11)."
+
+[dependencies]
+pearl-core.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
