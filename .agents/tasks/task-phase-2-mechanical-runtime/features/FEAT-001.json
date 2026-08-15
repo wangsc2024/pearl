@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Implement pearl-precision crate: the Precision Decision Engine that classifies tasks as P0/P1/P2/P3 before execution based on their capability manifest declarations and quality spec. This is the step-level classification that determines which runtime adapter to route to (Article 1 enforcement). pearl-core already defines PrecisionClass and QualitySpec; this crate adds the decision logic that inspects a task's requirements and emits the classification.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create crates/pearl-precision/Cargo.toml with dependencies on pearl-core and pearl-governance (for CapabilityManifest). Use workspace.dependencies pattern.",
     "Add pearl-precision to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-precision = { path = 'crates/pearl-precision' } to [workspace.dependencies].",
@@ -28,5 +28,5 @@
     "cargo fmt --all --check"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All 252 workspace tests pass (20 new in pearl-precision). Clippy clean, fmt clean. The crate depends on pearl-core (PrecisionClass, QualitySpec) and pearl-governance (CapabilityManifest, ExecutionKind, Runtime, etc.). ClassificationInput::from_manifest and from_manifest_inferred provide two ways to construct input from governance manifests."
 }
