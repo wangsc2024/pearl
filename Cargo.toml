@@ -8,6 +8,7 @@ members = [
     "crates/pearl-queue",
     "crates/pearl-process-supervisor",
     "crates/pearl-governance",
+    "crates/pearl-precision",
     "apps/pearl-cli",
 ]
 
@@ -27,6 +28,7 @@ pearl-lease = { path = "crates/pearl-lease" }
 pearl-queue = { path = "crates/pearl-queue" }
 pearl-process-supervisor = { path = "crates/pearl-process-supervisor" }
 pearl-governance = { path = "crates/pearl-governance" }
+pearl-precision = { path = "crates/pearl-precision" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

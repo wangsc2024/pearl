@@ -573,6 +573,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-precision"
+version = "0.1.0"
+dependencies = [
+ "pearl-core",
+ "pearl-governance",
+ "serde",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "pearl-process-supervisor"
 version = "0.1.0"
 dependencies = [

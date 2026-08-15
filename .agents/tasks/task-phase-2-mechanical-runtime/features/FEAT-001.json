@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Implement pearl-precision crate: the Precision Decision Engine that classifies tasks as P0/P1/P2/P3 before execution based on their capability manifest declarations and quality spec. This is the step-level classification that determines which runtime adapter to route to (Article 1 enforcement). pearl-core already defines PrecisionClass and QualitySpec; this crate adds the decision logic that inspects a task's requirements and emits the classification.",
+  "status": "in_progress",
+  "steps": [
+    "Create crates/pearl-precision/Cargo.toml with dependencies on pearl-core and pearl-governance (for CapabilityManifest). Use workspace.dependencies pattern.",
+    "Add pearl-precision to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-precision = { path = 'crates/pearl-precision' } to [workspace.dependencies].",
+    "Create crates/pearl-precision/src/lib.rs with module doc explaining this enforces Article 1 (determinism first) and Article 11 (autonomy from verifiability) by classifying work before routing.",
+    "Implement a ClassificationInput struct that captures: capability_type, execution_kind, runtime, quality.deterministic, quality_spec (QualitySpec from pearl-core), and optional override.",
+    "Implement PrecisionDecisionEngine with a classify() method that applies the decision rules: (1) If quality.deterministic==true AND execution.kind==script AND runtime.is_mechanical() => P0. (2) If deterministic==false AND deterministic_verification==true => P1 (generative but verifiable). (3) If deterministic==false AND deterministic_verification==false AND exactness_required==true => P2 (partially verifiable). (4) Otherwise => P3 (subjective). Allow a manual override with audit trail.",
+    "Implement from_manifest(CapabilityManifest) -> ClassificationInput convenience method that extracts fields from a governance manifest.",
+    "Implement ClassificationResult with the class, reasoning (Vec<String> explaining which rules fired), and whether it was overridden.",
+    "Write comprehensive tests: P0 for deterministic scripts, P1 for LLM-generated-but-verifiable, P2 for exact-but-unverifiable, P3 for best-effort. Test override. Test that the classification aligns with Article 1 (P0 forbids LLM, checked via permits_llm_generation()).",
+    "Ensure cargo test --workspace passes, clippy -D warnings clean, fmt clean."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p pearl-precision succeeds",
+    "All tests in pearl-precision pass",
+    "Classification of a deterministic script manifest yields P0",
+    "Classification of a non-deterministic manifest with deterministic verification yields P1",
+    "cargo clippy --workspace --all-targets -- -D warnings passes",
+    "cargo fmt --all --check passes"
+  ],
+  "verification": [
+    "cargo test -p pearl-precision",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all --check"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
