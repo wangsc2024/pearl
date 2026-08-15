@@ -16,15 +16,17 @@
 //!
 //! ## Supported runtimes
 //!
-//! The mechanical runtimes from [`pearl_governance::manifest::Runtime`]:
+//! The mechanical runtimes from [`pearl_governance::manifest::Runtime`]. Interpreter names
+//! are resolved per platform by [`programs`] rather than hard-coded, because `python3` and
+//! `bash` do not mean the same thing — or exist — on Windows:
 //!
-//! | Runtime    | Program resolved |
-//! |------------|-----------------|
-//! | Python     | `python3`       |
-//! | PowerShell | `pwsh`          |
-//! | Shell      | `bash`          |
-//! | Rust       | entrypoint path |
-//! | Native     | entrypoint path |
+//! | Runtime    | Program resolved                          | Override        |
+//! |------------|-------------------------------------------|-----------------|
+//! | Python     | `python3` / `python` / `py`               | `PEARL_PYTHON`  |
+//! | PowerShell | `pwsh` / `powershell`                     | `PEARL_PWSH`    |
+//! | Shell      | `bash` / `sh`                             | `PEARL_BASH`    |
+//! | Rust       | entrypoint path                           | —               |
+//! | Native     | entrypoint path                           | —               |
 
 use chrono::TimeDelta;
 use pearl_core::Clock;
@@ -35,8 +37,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub mod agent_adapters;
+pub mod programs;
 
-pub use agent_adapters::{ClaudeCodeAdapter, CodexAdapter, CursorAdapter, LlamaCppAdapter};
+pub use agent_adapters::{
+    agent_adapter_for, ClaudeCodeAdapter, CodexAdapter, CursorAdapter, LlamaCppAdapter,
+};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -186,13 +191,13 @@ impl<S: ProcessSupervisor> ScriptRuntimeAdapter<S> {
     fn resolve_command(spec: &ScriptSpec) -> Result<(String, Vec<String>), RuntimeError> {
         let (program, mut args) = match spec.runtime {
             Runtime::Python => {
-                let program = "python3".to_string();
+                let program = programs::python();
                 let mut args = vec![spec.entrypoint.to_string_lossy().to_string()];
                 args.extend(spec.args.iter().cloned());
                 (program, args)
             }
             Runtime::Powershell => {
-                let program = "pwsh".to_string();
+                let program = programs::powershell();
                 let mut args = vec![
                     "-NoProfile".to_string(),
                     "-File".to_string(),
@@ -202,7 +207,7 @@ impl<S: ProcessSupervisor> ScriptRuntimeAdapter<S> {
                 (program, args)
             }
             Runtime::Shell => {
-                let program = "bash".to_string();
+                let program = programs::bash();
                 let mut args = vec![spec.entrypoint.to_string_lossy().to_string()];
                 args.extend(spec.args.iter().cloned());
                 (program, args)
@@ -253,7 +258,9 @@ impl<S: ProcessSupervisor> RuntimeAdapter for ScriptRuntimeAdapter<S> {
     fn execute(&self, spec: &ScriptSpec, clock: &dyn Clock) -> Result<RuntimeResult, RuntimeError> {
         let cmd = Self::build_command_spec(spec)?;
         let start = clock.now();
-        let mut proc = self.supervisor.spawn(&cmd)?;
+        // The same clock computes the deadline and enforces it, so a test clock behaves
+        // predictably instead of depending on where real time happens to be.
+        let mut proc = self.supervisor.spawn(&cmd, clock)?;
         let exit_status = self.supervisor.wait(&mut proc, clock)?;
         let duration = clock.now() - start;
 
@@ -358,9 +365,9 @@ pub fn parse_structured_output(stdout: &str) -> Option<serde_json::Value> {
 /// Exposed for testing and introspection.
 pub fn resolve_program(runtime: Runtime, entrypoint: &std::path::Path) -> Option<String> {
     match runtime {
-        Runtime::Python => Some("python3".to_string()),
-        Runtime::Powershell => Some("pwsh".to_string()),
-        Runtime::Shell => Some("bash".to_string()),
+        Runtime::Python => Some(programs::python()),
+        Runtime::Powershell => Some(programs::powershell()),
+        Runtime::Shell => Some(programs::bash()),
         Runtime::Rust | Runtime::Native => Some(entrypoint.to_string_lossy().to_string()),
         _ => None,
     }
@@ -395,20 +402,25 @@ mod tests {
     // --- Command resolution tests ---
 
     #[test]
-    fn python_runtime_resolves_to_python3() {
+    fn python_runtime_resolves_to_the_platform_interpreter() {
         let spec = sample_spec(Runtime::Python);
         let cmd = ScriptRuntimeAdapter::<pearl_process_supervisor::PlatformSupervisor>::build_command_spec(&spec).unwrap();
-        assert_eq!(cmd.program, "python3");
+        // The exact program depends on the platform and what is installed, so the
+        // invariant under test is that resolution is delegated rather than hard-coded.
+        assert_eq!(cmd.program, programs::python());
+        assert!(cmd.program.to_lowercase().contains("py"));
         assert_eq!(cmd.args[0], "/usr/local/bin/my-script.py");
         assert_eq!(cmd.args[1], "--verbose");
         assert_eq!(cmd.args[2], "input.json");
     }
 
     #[test]
-    fn powershell_runtime_resolves_to_pwsh() {
+    fn powershell_runtime_resolves_to_a_powershell_with_profile_disabled() {
         let spec = sample_spec(Runtime::Powershell);
         let cmd = ScriptRuntimeAdapter::<pearl_process_supervisor::PlatformSupervisor>::build_command_spec(&spec).unwrap();
-        assert_eq!(cmd.program, "pwsh");
+        assert_eq!(cmd.program, programs::powershell());
+        // -NoProfile is not cosmetic: a user profile could change the working directory,
+        // set aliases, or write to stdout and break the §26 machine-JSON contract.
         assert_eq!(cmd.args[0], "-NoProfile");
         assert_eq!(cmd.args[1], "-File");
         assert_eq!(cmd.args[2], "/usr/local/bin/my-script.py");
@@ -416,10 +428,10 @@ mod tests {
     }
 
     #[test]
-    fn shell_runtime_resolves_to_bash() {
+    fn shell_runtime_resolves_to_a_posix_shell() {
         let spec = sample_spec(Runtime::Shell);
         let cmd = ScriptRuntimeAdapter::<pearl_process_supervisor::PlatformSupervisor>::build_command_spec(&spec).unwrap();
-        assert_eq!(cmd.program, "bash");
+        assert_eq!(cmd.program, programs::bash());
         assert_eq!(cmd.args[0], "/usr/local/bin/my-script.py");
     }
 
@@ -645,17 +657,19 @@ mod tests {
 
     #[test]
     fn resolve_program_for_known_runtimes() {
+        // Interpreted runtimes go through platform resolution; compiled ones are the
+        // entrypoint itself.
         assert_eq!(
             resolve_program(Runtime::Python, &PathBuf::from("/x")),
-            Some("python3".to_string())
+            Some(programs::python())
         );
         assert_eq!(
             resolve_program(Runtime::Powershell, &PathBuf::from("/x")),
-            Some("pwsh".to_string())
+            Some(programs::powershell())
         );
         assert_eq!(
             resolve_program(Runtime::Shell, &PathBuf::from("/x")),
-            Some("bash".to_string())
+            Some(programs::bash())
         );
         assert_eq!(
             resolve_program(Runtime::Rust, &PathBuf::from("/my-bin")),
@@ -737,10 +751,14 @@ mod tests {
     fn validate_accepts_existing_entrypoint() {
         let adapter =
             ScriptRuntimeAdapter::new(pearl_process_supervisor::PlatformSupervisor::default());
-        // /bin/true exists on Linux/macOS
+        // A file the test creates, rather than a platform-specific one like /bin/true:
+        // validation checks existence, and the assertion should not depend on the OS.
+        let dir = tempfile::tempdir().unwrap();
+        let entrypoint = dir.path().join("tool");
+        std::fs::write(&entrypoint, b"").unwrap();
         let spec = ScriptSpec {
             runtime: Runtime::Native,
-            entrypoint: PathBuf::from("/bin/true"),
+            entrypoint,
             args: vec![],
             env: BTreeMap::new(),
             cwd: None,

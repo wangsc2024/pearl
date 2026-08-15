@@ -6,13 +6,35 @@
 //! - Structured JSON output parsing from script stdout
 //! - The PEARL_INPUT env var contract
 //!
-//! Requires: python3 available in PATH.
+//! Requires a Python interpreter on PATH (see `pearl_runtime::programs`). Cases that need
+//! an interpreter the machine does not have are skipped with a message rather than failed:
+//! a missing POSIX shell on Windows is an environment fact, not a defect in the adapter.
 
 use chrono::TimeDelta;
 use pearl_process_supervisor::PlatformSupervisor;
-use pearl_runtime::{RuntimeAdapter, RuntimeExitStatus, ScriptRuntimeAdapter, ScriptSpec};
+use pearl_runtime::{
+    programs, RuntimeAdapter, RuntimeExitStatus, ScriptRuntimeAdapter, ScriptSpec,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+/// Whether the resolved Python interpreter can run.
+fn python_usable() -> bool {
+    programs::is_available(&programs::python())
+}
+
+/// Whether the `Shell` runtime is meaningfully testable here.
+///
+/// On Windows, `bash.exe` is usually the WSL launcher, which cannot open a Windows-path
+/// script. Rather than pretend, the shell cases run only where a POSIX shell genuinely
+/// understands the paths we hand it: any Unix, or a Windows machine where the operator has
+/// pointed `PEARL_BASH` at a real one such as Git Bash.
+fn shell_usable() -> bool {
+    if cfg!(windows) && std::env::var("PEARL_BASH").is_err() {
+        return false;
+    }
+    programs::is_available(&programs::bash())
+}
 
 /// Helper to get the workspace root (where Cargo.toml lives).
 fn workspace_root() -> PathBuf {
@@ -28,6 +50,13 @@ fn workspace_root() -> PathBuf {
 /// Verify that a real Python script can be executed and stdout is captured.
 #[test]
 fn execute_real_python_verify_json_valid_input() {
+    if !python_usable() {
+        eprintln!(
+            "skipping: no usable Python interpreter ({})",
+            programs::python()
+        );
+        return;
+    }
     let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
     let clock = pearl_core::SystemClock;
 
@@ -83,6 +112,13 @@ fn execute_real_python_verify_json_valid_input() {
 /// Verify that schema validation failures are properly reported.
 #[test]
 fn execute_real_python_verify_json_invalid_input() {
+    if !python_usable() {
+        eprintln!(
+            "skipping: no usable Python interpreter ({})",
+            programs::python()
+        );
+        return;
+    }
     let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
     let clock = pearl_core::SystemClock;
 
@@ -122,6 +158,10 @@ fn execute_real_python_verify_json_invalid_input() {
 /// Verify that a simple shell script can be executed and output captured.
 #[test]
 fn execute_real_shell_echo() {
+    if !shell_usable() {
+        eprintln!("skipping: no usable POSIX shell (set PEARL_BASH to opt in on Windows)");
+        return;
+    }
     let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
     let clock = pearl_core::SystemClock;
 
@@ -169,6 +209,10 @@ echo '{"result": "hello", "count": 3}'
 /// Verify timeout enforcement with a real long-running script.
 #[test]
 fn execute_real_script_timeout() {
+    if !shell_usable() {
+        eprintln!("skipping: no usable POSIX shell (see execute_real_python_timeout)");
+        return;
+    }
     let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
     let clock = pearl_core::SystemClock;
 
@@ -203,9 +247,54 @@ fn execute_real_script_timeout() {
     assert!(!result.is_success());
 }
 
+/// Verify timeout enforcement on every platform, using the interpreter that is always
+/// required rather than the optional shell.
+#[test]
+fn execute_real_python_timeout() {
+    if !python_usable() {
+        eprintln!(
+            "skipping: no usable Python interpreter ({})",
+            programs::python()
+        );
+        return;
+    }
+    let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
+    let clock = pearl_core::SystemClock;
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let script_path = tmp_dir.path().join("slow.py");
+    std::fs::write(
+        &script_path,
+        "import time\ntime.sleep(60)\nprint('{\"done\": true}')\n",
+    )
+    .unwrap();
+
+    let spec = ScriptSpec {
+        runtime: pearl_governance::manifest::Runtime::Python,
+        entrypoint: script_path,
+        args: vec![],
+        env: BTreeMap::new(),
+        cwd: None,
+        timeout: TimeDelta::try_seconds(1).unwrap(),
+        input_payload: None,
+    };
+
+    let result = adapter.execute(&spec, &clock).unwrap();
+
+    assert_eq!(result.exit_status, RuntimeExitStatus::TimedOut);
+    assert!(!result.is_success(), "a timeout is never success");
+}
+
 /// Verify that PEARL_INPUT env var is correctly passed to scripts.
 #[test]
 fn execute_real_python_reads_pearl_input() {
+    if !python_usable() {
+        eprintln!(
+            "skipping: no usable Python interpreter ({})",
+            programs::python()
+        );
+        return;
+    }
     let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
     let clock = pearl_core::SystemClock;
 

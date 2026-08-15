@@ -9,7 +9,10 @@
 //! - Cannot modify policy, expand tools, or add side effects
 
 mod executor;
+pub mod runtime;
 
 pub use executor::{
-    Checkpoint, ExecutionResult, Executor, ExecutorConfig, StepExecutor, StepOutcome, StepRecord,
+    Checkpoint, CheckpointSink, ExecutionResult, Executor, ExecutorConfig, NullSink, StepExecutor,
+    StepOutcome, StepRecord,
 };
+pub use runtime::{step_executor_fn, RuntimeStepExecutor};

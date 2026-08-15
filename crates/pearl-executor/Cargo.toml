@@ -5,16 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Executor: executes compiled plans step by step with checkpoint/resume (SS 31, 41)."
+description = "Executor: runs compiled plans in dependency order, with real capability execution and durable checkpoints (SS 31, SS 41)."
 
 [dependencies]
+pearl-capabilities.workspace = true
 pearl-core.workspace = true
+pearl-events.workspace = true
 pearl-planner.workspace = true
 pearl-plan-compiler.workspace = true
-pearl-events.workspace = true
-serde.workspace = true
+pearl-process-supervisor.workspace = true
+pearl-runtime.workspace = true
+
 chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true

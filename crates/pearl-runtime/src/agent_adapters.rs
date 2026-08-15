@@ -11,6 +11,23 @@ use crate::{RuntimeAdapter, RuntimeError, RuntimeResult, ScriptSpec};
 use pearl_core::Clock;
 use pearl_governance::manifest::Runtime;
 
+/// The adapter for a non-mechanical runtime, if one exists.
+///
+/// The seam that keeps agent execution out of the worker's control flow: a caller asks for
+/// the runtime a capability declared and either gets something that can run it or an honest
+/// `None`. Mechanical runtimes are deliberately absent — those go through
+/// [`crate::ScriptRuntimeAdapter`], which needs a process supervisor and therefore cannot
+/// be produced from a runtime name alone.
+pub fn agent_adapter_for(runtime: Runtime) -> Option<Box<dyn RuntimeAdapter>> {
+    match runtime {
+        Runtime::ClaudeCode => Some(Box::new(ClaudeCodeAdapter::new())),
+        Runtime::Codex => Some(Box::new(CodexAdapter::new())),
+        Runtime::Cursor => Some(Box::new(CursorAdapter::new())),
+        Runtime::LlamaCpp => Some(Box::new(LlamaCppAdapter::new())),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ClaudeCodeAdapter
 // ---------------------------------------------------------------------------

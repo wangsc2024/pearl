@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 use pearl_core::{
     AttemptId, CheckpointId, EventId, IdempotencyKey, LeaseId, PrecisionClass, QualitySpec, RunId,
-    TaskId, TaskState, TraceId, WorkerId, EVENT_SCHEMA_VERSION,
+    TaskId, TaskPlan, TaskState, TraceId, WorkerId, EVENT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,14 @@ pub enum PearlEvent {
         /// whether verification was deterministic, so rebuilt tasks silently differed
         /// from live ones. The replay equivalence test caught it.
         quality: QualitySpec,
+        /// What the submitter declared: which capability to run, and how to verify it.
+        ///
+        /// Same reasoning as `quality`. A plan that lived only in the submitted YAML could
+        /// not be recovered by replay, and a worker reading a rebuilt task would run it
+        /// with no assurance at all — silently turning a verified task into an unverified
+        /// one. Defaults to empty so a v1 ledger still replays.
+        #[serde(default, skip_serializing_if = "TaskPlan::is_empty")]
+        plan: TaskPlan,
     },
 
     #[serde(rename = "task.planned")]
@@ -70,8 +78,15 @@ pub enum PearlEvent {
         outcome: RunOutcome,
     },
 
+    /// An attempt within a run.
+    ///
+    /// Carries `task_id` as well as `run_id` even though the run determines the task: the
+    /// ledger indexes on `task_id`, so an event without it cannot be found by the question
+    /// operators actually ask — "what happened to this task?".
     #[serde(rename = "attempt.started")]
     AttemptStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
         run_id: RunId,
         attempt_id: AttemptId,
         attempt_number: u32,
@@ -79,6 +94,8 @@ pub enum PearlEvent {
 
     #[serde(rename = "attempt.ended")]
     AttemptEnded {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
         run_id: RunId,
         attempt_id: AttemptId,
         outcome: RunOutcome,
@@ -114,13 +131,19 @@ pub enum PearlEvent {
 
     #[serde(rename = "script.started")]
     ScriptStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
         capability_id: String,
         runtime: String,
     },
 
     #[serde(rename = "script.completed")]
     ScriptCompleted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
         capability_id: String,
+        /// `-1` when the process never reported a code of its own: killed, signalled or
+        /// timed out. Recording that plainly beats inventing a plausible code.
         exit_code: i32,
         duration_ms: u64,
     },
@@ -227,6 +250,12 @@ impl PearlEvent {
             | PearlEvent::VerificationPassed { task_id, .. }
             | PearlEvent::VerificationFailed { task_id, .. }
             | PearlEvent::EvidenceStored { task_id, .. } => Some(task_id),
+            // Optional on these: they are scoped to a run or a capability, and the producer
+            // may not know the task. When it does know, correlation should not be lost.
+            PearlEvent::AttemptStarted { task_id, .. }
+            | PearlEvent::AttemptEnded { task_id, .. }
+            | PearlEvent::ScriptStarted { task_id, .. }
+            | PearlEvent::ScriptCompleted { task_id, .. } => task_id.as_ref(),
             _ => None,
         }
     }
@@ -334,6 +363,11 @@ mod tests {
                 task_type: "digest".into(),
                 precision_class: Some(PrecisionClass::P1),
                 quality: QualitySpec::mechanical(),
+                plan: TaskPlan {
+                    capability: Some("script.task-score".into()),
+                    assurance: vec![pearl_core::AssuranceStep::script("verifier.task-result")],
+                    timeout_seconds: Some(30),
+                },
             },
             PearlEvent::TaskStateChanged {
                 task_id: task(),
@@ -398,15 +432,39 @@ mod tests {
     }
 
     #[test]
-    fn run_scoped_events_have_no_task_but_have_a_run() {
+    fn a_run_scoped_event_always_has_a_run_and_may_have_a_task() {
         let run_id = RunId::new();
-        let event = PearlEvent::AttemptStarted {
+        let anonymous = PearlEvent::AttemptStarted {
+            task_id: None,
             run_id,
             attempt_id: AttemptId::new(),
             attempt_number: 2,
         };
-        assert_eq!(event.task_id(), None);
-        assert_eq!(event.run_id(), Some(&run_id));
+        assert_eq!(anonymous.task_id(), None);
+        assert_eq!(anonymous.run_id(), Some(&run_id));
+
+        // When the producer knows the task, correlation must not be lost: the ledger
+        // indexes on task_id, and "what happened to this task?" is the question asked most.
+        let correlated = PearlEvent::AttemptStarted {
+            task_id: Some(task()),
+            run_id,
+            attempt_id: AttemptId::new(),
+            attempt_number: 2,
+        };
+        assert_eq!(correlated.task_id(), Some(&task()));
+        assert_eq!(correlated.run_id(), Some(&run_id));
+    }
+
+    #[test]
+    fn script_events_carry_their_task_when_it_is_known() {
+        let event = PearlEvent::ScriptCompleted {
+            task_id: Some(task()),
+            capability_id: "script.task-score".into(),
+            exit_code: 0,
+            duration_ms: 12,
+        };
+        assert_eq!(event.task_id(), Some(&task()));
+        assert_eq!(event.event_type(), "script.completed");
     }
 
     #[test]

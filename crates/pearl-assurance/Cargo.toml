@@ -5,13 +5,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Assurance Engine: runs verification checks after execution to confirm task success (SS 32)."
+description = "Assurance Engine: execution finished is not the same as task succeeded (SS 32, Articles 2, 4, 8)."
 
 [dependencies]
 pearl-core.workspace = true
+pearl-governance.workspace = true
+pearl-process-supervisor.workspace = true
+pearl-runtime.workspace = true
+
+chrono.workspace = true
+jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-serde_yaml.workspace = true
+tempfile.workspace = true

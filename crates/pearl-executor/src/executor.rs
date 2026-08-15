@@ -20,7 +20,7 @@ pub enum StepOutcome {
 }
 
 /// Record of a completed step execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepRecord {
     /// The step id.
     pub step_id: String,
@@ -140,6 +140,23 @@ impl Executor {
     /// a step whose dependency failed will be skipped. After each step, the
     /// checkpoint is updated.
     pub fn execute(&self, plan: &CompiledPlan, checkpoint: Option<Checkpoint>) -> ExecutionResult {
+        self.execute_with_sink(plan, checkpoint, &mut NullSink)
+    }
+
+    /// Executes a plan, committing each step's checkpoint through `sink` before continuing.
+    ///
+    /// §41: only a *committed* checkpoint licenses the next step. An in-memory checkpoint
+    /// satisfies the shape of the requirement while losing everything on the crash it exists
+    /// to survive, so durability is the caller's to provide and the executor's to demand.
+    ///
+    /// A sink that fails stops the plan. Continuing would mean executing a step whose
+    /// predecessor's completion was not recorded — on resume that step would run twice.
+    pub fn execute_with_sink(
+        &self,
+        plan: &CompiledPlan,
+        checkpoint: Option<Checkpoint>,
+        sink: &mut dyn CheckpointSink,
+    ) -> ExecutionResult {
         let mut ckpt = checkpoint.unwrap_or_default();
         let resumed = !ckpt.completed_steps.is_empty();
         let mut failed_steps: HashSet<String> = HashSet::new();
@@ -170,7 +187,10 @@ impl Executor {
                         completed_at: Utc::now(),
                     };
                     failed_steps.insert(step.id.clone());
-                    ckpt.record(record);
+                    ckpt.record(record.clone());
+                    if let Err(detail) = sink.commit(&record, &ckpt) {
+                        return Self::halted(ckpt, resumed, &record.step_id, &detail);
+                    }
                     continue;
                 }
             }
@@ -190,7 +210,10 @@ impl Executor {
                 started_at,
                 completed_at,
             };
-            ckpt.record(record);
+            ckpt.record(record.clone());
+            if let Err(detail) = sink.commit(&record, &ckpt) {
+                return Self::halted(ckpt, resumed, &record.step_id, &detail);
+            }
         }
 
         let success = failed_steps.is_empty();
@@ -199,6 +222,41 @@ impl Executor {
             records: ckpt.records,
             resumed,
         }
+    }
+
+    /// Stops the plan because progress could not be recorded.
+    fn halted(mut ckpt: Checkpoint, resumed: bool, step_id: &str, detail: &str) -> ExecutionResult {
+        ckpt.records.push(StepRecord {
+            step_id: format!("{step_id}:checkpoint"),
+            outcome: StepOutcome::Failed {
+                error: format!("checkpoint could not be committed: {detail}"),
+            },
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        });
+        ExecutionResult {
+            success: false,
+            records: ckpt.records,
+            resumed,
+        }
+    }
+}
+
+/// Somewhere durable to record progress after each step — §41.
+pub trait CheckpointSink {
+    /// Commits one step's completion. Returning `Err` halts the plan.
+    fn commit(&mut self, record: &StepRecord, checkpoint: &Checkpoint) -> Result<(), String>;
+}
+
+/// A sink that records nothing.
+///
+/// The default, so that a caller with no store still gets ordering and resume semantics —
+/// just not across a crash.
+pub struct NullSink;
+
+impl CheckpointSink for NullSink {
+    fn commit(&mut self, _record: &StepRecord, _checkpoint: &Checkpoint) -> Result<(), String> {
+        Ok(())
     }
 }
 

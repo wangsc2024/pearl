@@ -369,11 +369,10 @@ mod tests {
             id: "script.example".into(),
             version: 1,
             capability_type: CapabilityType::Script,
+            functional_kind: None,
             description: Some("example".into()),
-            execution: Execution {
-                kind: ExecutionKind::Script,
-                runtime: Runtime::Python,
-            },
+            execution: Execution::new(ExecutionKind::Script, Runtime::Python),
+            retry: None,
             quality: Quality {
                 deterministic: true,
             },
@@ -399,10 +398,7 @@ mod tests {
     #[test]
     fn article_1_deterministic_agent_is_a_violation() {
         let mut m = base();
-        m.execution = Execution {
-            kind: ExecutionKind::Agent,
-            runtime: Runtime::ClaudeCode,
-        };
+        m.execution = Execution::new(ExecutionKind::Agent, Runtime::ClaudeCode);
 
         let findings = check_no_llm_for_deterministic(&m);
         assert_eq!(
@@ -420,10 +416,7 @@ mod tests {
         m.quality = Quality {
             deterministic: false,
         };
-        m.execution = Execution {
-            kind: ExecutionKind::Agent,
-            runtime: Runtime::ClaudeCode,
-        };
+        m.execution = Execution::new(ExecutionKind::Agent, Runtime::ClaudeCode);
         assert!(check_no_llm_for_deterministic(&m).is_empty());
     }
 
@@ -633,10 +626,7 @@ mod tests {
     fn gate_fails_and_reports_every_violation() {
         let mut bad = base();
         bad.id = "bad.capability".into();
-        bad.execution = Execution {
-            kind: ExecutionKind::Agent,
-            runtime: Runtime::ClaudeCode,
-        };
+        bad.execution = Execution::new(ExecutionKind::Agent, Runtime::ClaudeCode);
         bad.risk = Risk {
             side_effect: true,
             idempotency: None,

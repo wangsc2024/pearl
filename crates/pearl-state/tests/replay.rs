@@ -47,6 +47,7 @@ fn populate(store: &mut StateStore) {
                 task_type: "digest".into(),
                 precision_class: Some(PrecisionClass::P1),
                 quality: QualitySpec::mechanical(),
+                plan: Default::default(),
             },
             t0(),
         )
@@ -106,6 +107,7 @@ fn populate(store: &mut StateStore) {
                 task_type: "research".into(),
                 precision_class: Some(PrecisionClass::P3),
                 quality: QualitySpec::exact_but_unverifiable(),
+                plan: Default::default(),
             },
             later(30),
         )
@@ -144,6 +146,7 @@ fn populate(store: &mut StateStore) {
                 task_type: "digest".into(),
                 precision_class: None,
                 quality: QualitySpec::best_effort(),
+                plan: Default::default(),
             },
             later(50),
         )

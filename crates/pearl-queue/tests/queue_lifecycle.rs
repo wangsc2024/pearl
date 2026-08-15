@@ -29,6 +29,7 @@ fn seeded_store(clock: &TestClock, n: usize) -> (StateStore, Vec<TaskId>) {
                     task_type: "digest".into(),
                     precision_class: None,
                     quality: QualitySpec::mechanical(),
+                    plan: Default::default(),
                 },
                 now,
             )
@@ -378,6 +379,7 @@ fn queue_state_survives_restart() {
                     task_type: "digest".into(),
                     precision_class: None,
                     quality: QualitySpec::mechanical(),
+                    plan: Default::default(),
                 },
                 now,
             )

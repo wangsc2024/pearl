@@ -38,7 +38,7 @@ fn pid_alive(pid: u32) -> bool {
 fn spawn_and_collect_a_successful_exit() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("exit 0"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("exit 0"))
         .unwrap();
 
     let status = sup.wait(&mut proc, &SystemClock).unwrap();
@@ -50,7 +50,7 @@ fn spawn_and_collect_a_successful_exit() {
 fn nonzero_exit_is_reported_faithfully() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("exit 42"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("exit 42"))
         .unwrap();
 
     let status = sup.wait(&mut proc, &SystemClock).unwrap();
@@ -62,7 +62,7 @@ fn nonzero_exit_is_reported_faithfully() {
 fn spawn_failure_is_an_error_not_a_panic() {
     let sup = supervisor();
     let err = sup
-        .spawn(&CommandSpec::new("/definitely/not/a/real/binary"))
+        .spawn_now(&CommandSpec::new("/definitely/not/a/real/binary"))
         .unwrap_err();
     assert!(err.to_string().contains("failed to spawn"), "got: {err}");
 }
@@ -71,7 +71,7 @@ fn spawn_failure_is_an_error_not_a_panic() {
 fn status_is_non_blocking() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 5"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 5"))
         .unwrap();
 
     // Must return immediately with "still running" rather than waiting 5 seconds.
@@ -87,7 +87,7 @@ fn status_is_non_blocking() {
 fn cancel_terminates_the_process() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 60"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 60"))
         .unwrap();
     let pid = proc.pid;
     assert!(pid_alive(pid));
@@ -126,7 +126,7 @@ fn cancel_reclaims_the_entire_process_tree() {
 
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg(&script))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg(&script))
         .unwrap();
 
     // Wait for all three generations to register themselves.
@@ -167,7 +167,7 @@ fn cancel_reclaims_the_entire_process_tree() {
 fn timeout_kills_an_overrunning_process() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(
+        .spawn_now(
             &CommandSpec::new("/bin/sh")
                 .arg("-c")
                 .arg("sleep 120")
@@ -192,7 +192,7 @@ fn a_process_ignoring_sigterm_is_still_killed() {
     // not be able to hold the worker indefinitely.
     let sup = supervisor();
     let mut proc = sup
-        .spawn(
+        .spawn_now(
             &CommandSpec::new("/bin/sh")
                 .arg("-c")
                 .arg("trap '' TERM; sleep 120")
@@ -213,7 +213,7 @@ fn a_process_ignoring_sigterm_is_still_killed() {
 fn a_process_finishing_within_its_timeout_is_not_disturbed() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(
+        .spawn_now(
             &CommandSpec::new("/bin/sh")
                 .arg("-c")
                 .arg("exit 7")
@@ -231,7 +231,7 @@ fn a_process_finishing_within_its_timeout_is_not_disturbed() {
 fn cleanup_is_idempotent() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 60"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 60"))
         .unwrap();
 
     // Article 9 requires cleanup to be safe to call twice: a supervisor cannot know
@@ -245,7 +245,7 @@ fn cleanup_is_idempotent() {
 fn cancelling_an_already_dead_process_is_not_an_error() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("exit 0"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("exit 0"))
         .unwrap();
     sup.wait(&mut proc, &SystemClock).unwrap();
 
@@ -258,7 +258,7 @@ fn cancelling_an_already_dead_process_is_not_an_error() {
 fn is_alive_tracks_the_process() {
     let sup = supervisor();
     let mut proc = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 30"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 30"))
         .unwrap();
     assert!(sup.is_alive(&proc));
 
@@ -276,7 +276,7 @@ fn environment_is_passed_to_the_child() {
 
     let sup = supervisor();
     let mut proc = sup
-        .spawn(
+        .spawn_now(
             &CommandSpec::new("/bin/sh")
                 .arg("-c")
                 .arg(format!("printf '%s' \"$PEARL_TEST\" > {}", out.display()))
@@ -296,7 +296,7 @@ fn clean_env_withholds_inherited_variables() {
 
     let sup = supervisor();
     let mut proc = sup
-        .spawn(
+        .spawn_now(
             &CommandSpec::new("/bin/sh")
                 .arg("-c")
                 .arg(format!(
@@ -322,7 +322,7 @@ fn working_directory_is_honoured() {
     let dir = tempfile::tempdir().unwrap();
     let sup = supervisor();
     let mut proc = sup
-        .spawn(
+        .spawn_now(
             &CommandSpec::new("/bin/sh")
                 .arg("-c")
                 .arg("pwd > pwd.txt")
@@ -346,10 +346,10 @@ fn concurrent_processes_are_isolated_from_each_other() {
     // Each spawn gets its own process group, so cancelling one must not affect another.
     let sup = supervisor();
     let mut keep = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 30"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 30"))
         .unwrap();
     let mut kill = sup
-        .spawn(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 30"))
+        .spawn_now(&CommandSpec::new("/bin/sh").arg("-c").arg("sleep 30"))
         .unwrap();
 
     assert_ne!(keep.pid, kill.pid);

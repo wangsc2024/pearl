@@ -38,6 +38,22 @@ pub enum RegistryError {
     #[error("failed to read directory {path}: {detail}")]
     Directory { path: PathBuf, detail: String },
 
+    /// The capability declares no entrypoint, so it cannot be executed.
+    #[error(
+        "capability '{capability_id}' declares no execution.entrypoint, so it cannot be executed"
+    )]
+    NoEntrypoint { capability_id: String },
+
+    /// The declared entrypoint does not exist on disk.
+    ///
+    /// Caught at resolution rather than at spawn so the error names the manifest's claim
+    /// instead of surfacing as "program not found" from the OS.
+    #[error("capability '{capability_id}' declares entrypoint '{path}', which does not exist")]
+    EntrypointMissing {
+        capability_id: String,
+        path: PathBuf,
+    },
+
     /// A manifest error (wrapper for ManifestError).
     #[error(transparent)]
     Manifest(#[from] ManifestError),
@@ -109,28 +125,28 @@ impl CapabilityRegistry {
         Ok(())
     }
 
-    /// Load a single manifest file from disk, classify it, and register it.
+    /// Load a manifest file from disk, classify each manifest in it, and register them.
+    ///
+    /// A file may hold several `---`-separated manifests. That is how the DDP application
+    /// groups a workflow's capabilities into one file, and a loader that only read the
+    /// first document would silently register a fraction of the registry.
     fn load_manifest_file(&mut self, path: &Path) -> Result<(), RegistryError> {
         let content = fs::read_to_string(path).map_err(|e| RegistryError::Io {
             path: path.to_path_buf(),
             detail: e.to_string(),
         })?;
 
-        let manifest =
-            CapabilityManifest::from_yaml(&content).map_err(|e| RegistryError::Parse {
-                path: path.to_path_buf(),
-                detail: e.to_string(),
-            })?;
+        for manifest in parse_manifest_documents(&content, path)? {
+            let input = ClassificationInput::from_manifest_inferred(&manifest);
+            let result = self.engine.classify(&input);
 
-        let input = ClassificationInput::from_manifest_inferred(&manifest);
-        let result = self.engine.classify(&input);
-
-        self.capabilities.push(RegisteredCapability {
-            manifest,
-            source_path: Some(path.to_path_buf()),
-            precision_class: result.class,
-            registered_at: Utc::now(),
-        });
+            self.capabilities.push(RegisteredCapability {
+                manifest,
+                source_path: Some(path.to_path_buf()),
+                precision_class: result.class,
+                registered_at: Utc::now(),
+            });
+        }
 
         Ok(())
     }
@@ -220,12 +236,396 @@ impl CapabilityRegistry {
     }
 }
 
+/// An entrypoint resolved to something a runtime can actually launch — §25.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedEntrypoint {
+    /// Absolute path to the script or binary, or the module name for module entrypoints.
+    pub target: PathBuf,
+    /// Fixed arguments the manifest declares.
+    pub args: Vec<String>,
+    /// Whether `target` is a module name rather than a filesystem path.
+    pub is_module: bool,
+}
+
+impl RegisteredCapability {
+    /// Resolves the declared entrypoint to an absolute path.
+    ///
+    /// Script paths are relative to the manifest that declares them, not to the process
+    /// working directory: a capability's location is a property of the capability, and
+    /// resolving against the cwd would make execution depend on where the worker was
+    /// started from.
+    pub fn resolve_entrypoint(&self) -> Result<ResolvedEntrypoint, RegistryError> {
+        let entrypoint = self
+            .manifest
+            .entrypoint()
+            .ok_or_else(|| RegistryError::NoEntrypoint {
+                capability_id: self.manifest.id.clone(),
+            })?;
+
+        let target = entrypoint
+            .target()
+            .ok_or_else(|| RegistryError::NoEntrypoint {
+                capability_id: self.manifest.id.clone(),
+            })?;
+
+        if entrypoint.is_module() {
+            return Ok(ResolvedEntrypoint {
+                target: PathBuf::from(target),
+                args: entrypoint.args.clone(),
+                is_module: true,
+            });
+        }
+
+        let declared = Path::new(target);
+        let resolved = if declared.is_absolute() {
+            declared.to_path_buf()
+        } else {
+            let base = self
+                .source_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            normalize(&base.join(declared))
+        };
+
+        if !resolved.exists() {
+            return Err(RegistryError::EntrypointMissing {
+                capability_id: self.manifest.id.clone(),
+                path: resolved,
+            });
+        }
+
+        Ok(ResolvedEntrypoint {
+            target: resolved,
+            args: entrypoint.args.clone(),
+            is_module: false,
+        })
+    }
+}
+
+/// Parses every YAML document in `content` as a manifest.
+///
+/// Empty documents are skipped: a file that ends with `---`, or opens with a comment block
+/// before the first document, is well-formed YAML and should not be an error.
+pub fn parse_manifest_documents(
+    content: &str,
+    path: &Path,
+) -> Result<Vec<CapabilityManifest>, RegistryError> {
+    use serde::Deserialize;
+
+    let mut manifests = Vec::new();
+    for document in serde_yaml::Deserializer::from_str(content) {
+        let value = serde_yaml::Value::deserialize(document).map_err(|e| RegistryError::Parse {
+            path: path.to_path_buf(),
+            detail: e.to_string(),
+        })?;
+        if value.is_null() {
+            continue;
+        }
+        let manifest = serde_yaml::from_value::<CapabilityManifest>(value).map_err(|e| {
+            RegistryError::Parse {
+                path: path.to_path_buf(),
+                detail: e.to_string(),
+            }
+        })?;
+        manifests.push(manifest);
+    }
+    Ok(manifests)
+}
+
+/// Collapses `.` and `..` without touching the filesystem.
+///
+/// `canonicalize` would be stricter but also resolves symlinks and fails on paths that do
+/// not exist yet, which turns a clear "entrypoint missing" into an io error.
+fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// Check if a path has a YAML extension.
 fn is_yaml_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod entrypoint_tests {
+    use super::*;
+    use pearl_governance::manifest::{
+        CapabilityType, Entrypoint, Execution, ExecutionKind, Platform, Quality, Risk, Runtime,
+        Schemas,
+    };
+    use tempfile::TempDir;
+
+    fn manifest_with(entrypoint: Option<Entrypoint>) -> CapabilityManifest {
+        CapabilityManifest {
+            id: "script.example".into(),
+            version: 1,
+            capability_type: CapabilityType::Script,
+            functional_kind: None,
+            description: None,
+            execution: Execution {
+                kind: ExecutionKind::Script,
+                runtime: Runtime::Python,
+                entrypoint,
+            },
+            quality: Quality {
+                deterministic: true,
+            },
+            risk: Risk {
+                side_effect: false,
+                idempotency: None,
+            },
+            platform: Platform {
+                windows: true,
+                linux: true,
+            },
+            schemas: Schemas::default(),
+            timeout_seconds: Some(10),
+            retry: None,
+            on_error: None,
+        }
+    }
+
+    fn registered(entrypoint: Option<Entrypoint>, source: Option<PathBuf>) -> RegisteredCapability {
+        RegisteredCapability {
+            manifest: manifest_with(entrypoint),
+            source_path: source,
+            precision_class: PrecisionClass::P0,
+            registered_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_script_path_resolves_against_its_manifest() {
+        let dir = TempDir::new().unwrap();
+        let manifest_path = dir.path().join("script.example.yaml");
+        let script_path = dir.path().join("worker.py");
+        std::fs::write(&script_path, "print(1)").unwrap();
+        std::fs::write(&manifest_path, "").unwrap();
+
+        let cap = registered(
+            Some(Entrypoint {
+                script: Some("worker.py".into()),
+                ..Entrypoint::default()
+            }),
+            Some(manifest_path),
+        );
+
+        let resolved = cap.resolve_entrypoint().unwrap();
+        assert_eq!(resolved.target, script_path);
+        assert!(!resolved.is_module);
+    }
+
+    #[test]
+    fn a_parent_relative_path_is_normalised() {
+        // The DDP layout puts manifests in capabilities/ and scripts in scripts/, so
+        // `../scripts/x.py` has to work.
+        let dir = TempDir::new().unwrap();
+        let manifests = dir.path().join("capabilities");
+        let scripts = dir.path().join("scripts");
+        std::fs::create_dir_all(&manifests).unwrap();
+        std::fs::create_dir_all(&scripts).unwrap();
+        let script_path = scripts.join("collect.py");
+        std::fs::write(&script_path, "print(1)").unwrap();
+
+        let cap = registered(
+            Some(Entrypoint {
+                script: Some("../scripts/collect.py".into()),
+                ..Entrypoint::default()
+            }),
+            Some(manifests.join("digest.yaml")),
+        );
+
+        assert_eq!(cap.resolve_entrypoint().unwrap().target, script_path);
+    }
+
+    #[test]
+    fn an_absolute_path_is_used_as_given() {
+        let dir = TempDir::new().unwrap();
+        let script_path = dir.path().join("tool.py");
+        std::fs::write(&script_path, "print(1)").unwrap();
+
+        let cap = registered(
+            Some(Entrypoint {
+                script: Some(script_path.to_string_lossy().to_string()),
+                ..Entrypoint::default()
+            }),
+            Some(dir.path().join("m.yaml")),
+        );
+
+        assert_eq!(cap.resolve_entrypoint().unwrap().target, script_path);
+    }
+
+    #[test]
+    fn declared_args_travel_with_the_entrypoint() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("t.py"), "print(1)").unwrap();
+
+        let cap = registered(
+            Some(Entrypoint {
+                script: Some("t.py".into()),
+                args: vec!["--phase3".into(), "--strict".into()],
+                ..Entrypoint::default()
+            }),
+            Some(dir.path().join("m.yaml")),
+        );
+
+        assert_eq!(
+            cap.resolve_entrypoint().unwrap().args,
+            vec!["--phase3", "--strict"]
+        );
+    }
+
+    #[test]
+    fn a_module_entrypoint_is_not_a_path() {
+        let cap = registered(
+            Some(Entrypoint {
+                module: Some("tools.validate_results".into()),
+                ..Entrypoint::default()
+            }),
+            None,
+        );
+
+        let resolved = cap.resolve_entrypoint().unwrap();
+        assert!(resolved.is_module);
+        assert_eq!(resolved.target, PathBuf::from("tools.validate_results"));
+    }
+
+    #[test]
+    fn a_missing_entrypoint_declaration_is_an_error_not_a_guess() {
+        let err = registered(None, None).resolve_entrypoint().unwrap_err();
+        assert!(
+            matches!(err, RegistryError::NoEntrypoint { .. }),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_declared_but_absent_script_is_reported_before_spawn() {
+        let dir = TempDir::new().unwrap();
+        let cap = registered(
+            Some(Entrypoint {
+                script: Some("not_written_yet.py".into()),
+                ..Entrypoint::default()
+            }),
+            Some(dir.path().join("m.yaml")),
+        );
+
+        let err = cap.resolve_entrypoint().unwrap_err();
+        // Caught here rather than surfacing as an OS "program not found", so the message
+        // names the manifest's claim.
+        assert!(
+            matches!(err, RegistryError::EntrypointMissing { .. }),
+            "got: {err}"
+        );
+        assert!(err.to_string().contains("not_written_yet.py"));
+    }
+
+    #[test]
+    fn the_repository_capabilities_all_resolve() {
+        // The whole point of the entrypoint field is that shipped capabilities are
+        // runnable. This fails if a manifest names a script that was never written.
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("capabilities");
+        let registry = CapabilityRegistry::load_directory(&root).expect("capabilities/ must load");
+        assert!(registry.len() >= 4, "expected the shipped capabilities");
+
+        for cap in registry.iter() {
+            let resolved = cap
+                .resolve_entrypoint()
+                .unwrap_or_else(|e| panic!("{}: {e}", cap.manifest.id));
+            assert!(
+                resolved.target.exists(),
+                "{} resolves to a path that does not exist",
+                cap.manifest.id
+            );
+        }
+    }
+
+    #[test]
+    fn multi_document_files_register_every_manifest() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("group.yaml");
+        std::fs::write(
+            &path,
+            r#"
+# A workflow's capabilities, grouped in one file as the DDP application does.
+---
+id: script.first
+version: 1
+type: script
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 5
+---
+id: script.second
+version: 1
+type: script
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 5
+---
+"#,
+        )
+        .unwrap();
+
+        let registry = CapabilityRegistry::load_directory(dir.path()).unwrap();
+        assert_eq!(registry.len(), 2, "both documents must be registered");
+        assert!(registry.find_by_id("script.first").is_some());
+        assert!(registry.find_by_id("script.second").is_some());
+    }
+
+    #[test]
+    fn the_ddp_application_manifests_parse() {
+        // They are multi-document files; a single-document loader silently registered only
+        // the first of each, which made most of the application invisible to the router.
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("applications/ddp/capabilities");
+        let registry = CapabilityRegistry::load_directory(&root).expect("DDP manifests must parse");
+        assert!(
+            registry.len() >= 10,
+            "expected every document across the DDP capability files, got {}",
+            registry.len()
+        );
+    }
 }
 
 #[cfg(test)]

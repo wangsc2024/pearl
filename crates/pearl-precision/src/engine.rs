@@ -250,8 +250,10 @@ mod tests {
             id: "test.capability".to_string(),
             version: 1,
             capability_type: cap_type,
+            functional_kind: None,
             description: None,
-            execution: Execution { kind, runtime },
+            execution: Execution::new(kind, runtime),
+            retry: None,
             quality: Quality { deterministic },
             risk: Risk {
                 side_effect: false,

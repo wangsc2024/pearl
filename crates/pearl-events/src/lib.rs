@@ -8,7 +8,7 @@
 //!
 //! ```
 //! use pearl_events::{EventLedger, PearlEvent, record};
-//! use pearl_core::{TaskId, TraceId, PrecisionClass, QualitySpec};
+//! use pearl_core::{TaskId, TaskPlan, TraceId, PrecisionClass, QualitySpec};
 //! use chrono::Utc;
 //!
 //! let ledger = EventLedger::open_in_memory().unwrap();
@@ -18,6 +18,7 @@
 //!     task_type: "digest".into(),
 //!     precision_class: Some(PrecisionClass::P1),
 //!     quality: QualitySpec::mechanical(),
+//!     plan: TaskPlan::empty(),
 //! }).unwrap();
 //!
 //! assert_eq!(ledger.read_trace(trace).unwrap().len(), 1);

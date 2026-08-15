@@ -22,6 +22,31 @@ pub struct AssuranceCheck {
     pub kind: CheckKind,
     /// Whether evidence must be recorded for this check.
     pub evidence_required: bool,
+    /// Extra parameters merged into the verifier's input.
+    ///
+    /// This is what lets one general verifier be reused: `verifier.task-result` can be told
+    /// which keys to require rather than needing a bespoke script per task. Ignored by
+    /// schema checks, which have nothing to parameterise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+}
+
+impl AssuranceCheck {
+    /// A check with no extra parameters.
+    pub fn new(name: impl Into<String>, kind: CheckKind, evidence_required: bool) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            evidence_required,
+            input: None,
+        }
+    }
+
+    /// Attaches verifier parameters.
+    pub fn with_input(mut self, input: serde_json::Value) -> Self {
+        self.input = Some(input);
+        self
+    }
 }
 
 /// A collection of assurance checks to run for a task.
@@ -46,10 +71,35 @@ impl AssuranceSpec {
 /// Outcome of a single check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckOutcome {
-    /// The check passed.
+    /// The check ran and the property held.
     Passed,
-    /// The check failed with a reason.
+    /// The check ran and the property did not hold. This is a verdict.
     Failed { reason: String },
+    /// The check could not run, so there is no verdict.
+    ///
+    /// Distinct from `Failed` because Article 2 treats them differently: a failure is
+    /// information, whereas the absence of a verdict means nothing has been verified and
+    /// success must not be claimed. Collapsing the two would let a broken verifier read as
+    /// a legitimately failing one — or worse, be retried until it "passed".
+    Errored { reason: String },
+}
+
+impl CheckOutcome {
+    pub fn passed(&self) -> bool {
+        matches!(self, CheckOutcome::Passed)
+    }
+
+    /// Whether a verdict was actually reached, either way.
+    pub fn is_verdict(&self) -> bool {
+        !matches!(self, CheckOutcome::Errored { .. })
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            CheckOutcome::Passed => None,
+            CheckOutcome::Failed { reason } | CheckOutcome::Errored { reason } => Some(reason),
+        }
+    }
 }
 
 /// Detail about one check's execution.
@@ -57,9 +107,15 @@ pub enum CheckOutcome {
 pub struct CheckDetail {
     /// The name of the check that was run.
     pub name: String,
+    /// What kind of check it was.
+    ///
+    /// Carried through so the caller can classify the resulting evidence (§52) without
+    /// re-deriving it by zipping against the spec, which would break silently if the
+    /// engine ever reordered or skipped a check.
+    pub kind: CheckKind,
     /// The outcome of running this check.
     pub outcome: CheckOutcome,
-    /// Whether evidence was provided (only relevant if evidence_required).
+    /// Whether this check produced a machine artifact to point at.
     pub evidence_provided: bool,
 }
 
@@ -75,10 +131,7 @@ pub struct AssuranceResult {
 impl AssuranceResult {
     /// Returns the number of passed checks.
     pub fn passed_count(&self) -> usize {
-        self.details
-            .iter()
-            .filter(|d| d.outcome == CheckOutcome::Passed)
-            .count()
+        self.details.iter().filter(|d| d.outcome.passed()).count()
     }
 
     /// Returns the number of failed checks.
@@ -87,6 +140,41 @@ impl AssuranceResult {
             .iter()
             .filter(|d| matches!(d.outcome, CheckOutcome::Failed { .. }))
             .count()
+    }
+
+    /// Returns the number of checks that could not run.
+    pub fn errored_count(&self) -> usize {
+        self.details
+            .iter()
+            .filter(|d| matches!(d.outcome, CheckOutcome::Errored { .. }))
+            .count()
+    }
+
+    /// Whether any check was actually performed.
+    ///
+    /// An empty result is not a pass. A caller that treated it as one would be claiming
+    /// verification it never attempted.
+    pub fn any_verdict(&self) -> bool {
+        self.details.iter().any(|d| d.outcome.is_verdict())
+    }
+
+    /// A one-line summary for a state-transition reason.
+    pub fn summary(&self) -> String {
+        format!(
+            "{}/{} checks passed, {} failed, {} could not run",
+            self.passed_count(),
+            self.details.len(),
+            self.failed_count(),
+            self.errored_count()
+        )
+    }
+
+    /// The first reason a check gave for not passing.
+    pub fn first_problem(&self) -> Option<String> {
+        self.details
+            .iter()
+            .find(|d| !d.outcome.passed())
+            .and_then(|d| d.outcome.reason().map(|r| format!("{}: {r}", d.name)))
     }
 }
 
@@ -142,9 +230,12 @@ impl AssuranceEngine {
 
         for check in &spec.checks {
             let outcome = (self.runner)(check);
-            let evidence_provided = !check.evidence_required || outcome == CheckOutcome::Passed;
+            // Evidence exists when the check actually ran, whatever it concluded. A check
+            // that could not run has nothing to point at, which is precisely why it cannot
+            // discharge an evidence requirement.
+            let evidence_provided = outcome.is_verdict();
 
-            if outcome != CheckOutcome::Passed {
+            if !outcome.passed() {
                 all_passed = false;
             }
             if check.evidence_required && !evidence_provided {
@@ -153,6 +244,7 @@ impl AssuranceEngine {
 
             details.push(CheckDetail {
                 name: check.name.clone(),
+                kind: check.kind.clone(),
                 outcome,
                 evidence_provided,
             });
@@ -176,6 +268,7 @@ mod tests {
                 schema: "output-v1".to_string(),
             },
             evidence_required: false,
+            input: None,
         }
     }
 
@@ -186,6 +279,7 @@ mod tests {
                 script_path: "/checks/verify.sh".to_string(),
             },
             evidence_required,
+            input: None,
         }
     }
 
@@ -196,6 +290,7 @@ mod tests {
                 command: "cargo test".to_string(),
             },
             evidence_required: true,
+            input: None,
         }
     }
 
@@ -260,20 +355,56 @@ mod tests {
     }
 
     #[test]
-    fn missing_evidence_on_failure_blocks_success() {
-        let engine = AssuranceEngine::always_fail("no evidence");
+    fn a_failing_check_still_produced_evidence() {
+        // A check that ran and said no has something to point at: its own output. What
+        // does *not* produce evidence is a check that never ran at all.
+        let engine = AssuranceEngine::always_fail("the property does not hold");
         let spec = AssuranceSpec::new(vec![script_check("needs-evidence", true)]);
         let result = engine.run(&spec);
         assert!(!result.passed);
-        // Evidence not provided because the check failed.
+        assert!(result.details[0].evidence_provided);
+        assert!(result.any_verdict());
+    }
+
+    #[test]
+    fn a_check_that_could_not_run_provides_no_evidence_and_no_verdict() {
+        let engine = AssuranceEngine::new(Box::new(|_| CheckOutcome::Errored {
+            reason: "verifier binary is missing".into(),
+        }));
+        let spec = AssuranceSpec::new(vec![script_check("needs-evidence", true)]);
+        let result = engine.run(&spec);
+
+        assert!(!result.passed, "no verdict cannot be a pass");
         assert!(!result.details[0].evidence_provided);
+        assert!(!result.any_verdict());
+        assert_eq!(result.errored_count(), 1);
+        // The distinction has to survive into the summary an operator reads.
+        assert!(
+            result.summary().contains("1 could not run"),
+            "{}",
+            result.summary()
+        );
     }
 
     #[test]
     fn check_kinds_serialize() {
         let check = schema_check("s");
-        let yaml = serde_yaml::to_string(&check).unwrap();
-        assert!(yaml.contains("SchemaValidation"));
+        let json = serde_json::to_string(&check).unwrap();
+        assert!(json.contains("SchemaValidation"), "got: {json}");
+    }
+
+    #[test]
+    fn the_first_problem_is_reported_with_its_check_name() {
+        let engine = AssuranceEngine::new(Box::new(|check| match check.name.as_str() {
+            "ok" => CheckOutcome::Passed,
+            _ => CheckOutcome::Failed {
+                reason: "mismatch".into(),
+            },
+        }));
+        let spec = AssuranceSpec::new(vec![schema_check("ok"), schema_check("broken")]);
+        let problem = engine.run(&spec).first_problem().unwrap();
+        assert!(problem.contains("broken"), "got: {problem}");
+        assert!(problem.contains("mismatch"), "got: {problem}");
     }
 
     #[test]

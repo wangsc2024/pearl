@@ -6,7 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use pearl_core::{
-    AttemptId, LeaseId, PrecisionClass, QualitySpec, RunId, TaskId, TaskState, TraceId, WorkerId,
+    AttemptId, LeaseId, PrecisionClass, QualitySpec, RunId, TaskId, TaskPlan, TaskState, TraceId,
+    WorkerId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,12 @@ pub struct TaskRecord {
     pub state: TaskState,
     pub precision_class: Option<PrecisionClass>,
     pub quality: QualitySpec,
+    /// What the submitter declared: which capability, and how to verify it (§22, §32).
+    ///
+    /// Empty when the task named nothing, in which case the worker falls back to routing by
+    /// `task_type` and to whatever the capability itself declares.
+    #[serde(default)]
+    pub plan: TaskPlan,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// How many times this task has been attempted across all runs.
@@ -79,6 +86,93 @@ impl LeaseRecord {
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         self.released_at.is_none() && now <= self.leased_until
     }
+}
+
+/// One step of a run, as it actually ran — §43.
+///
+/// The counterpart to the declared plan: `TaskRecord::plan` says what should happen, this
+/// says what did. A discrepancy between them is the kind of thing an audit needs to be able
+/// to see.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepRecord {
+    /// Unique within the run: `<run_id>:<step>`.
+    pub step_id: String,
+    pub run_id: RunId,
+    /// Position in execution order, starting at 1.
+    pub step_number: u32,
+    pub description: String,
+    /// `pending`, `running`, `success`, `failed` or `skipped`.
+    pub status: String,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl StepRecord {
+    /// A step of `run_id`, keyed so that re-recording the same step updates it.
+    ///
+    /// The stored id is scoped to the run because plan step names (`collect`, `verify`) are
+    /// only unique within a plan, and two runs of the same task would otherwise collide.
+    pub fn new(
+        run_id: RunId,
+        step_number: u32,
+        step: &str,
+        description: impl Into<String>,
+        status: impl Into<String>,
+    ) -> Self {
+        Self {
+            step_id: format!("{run_id}:{step}"),
+            run_id,
+            step_number,
+            description: description.into(),
+            status: status.into(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    /// Marks when the step started.
+    pub fn started(mut self, at: DateTime<Utc>) -> Self {
+        self.started_at = Some(at);
+        self
+    }
+
+    /// Marks when the step finished.
+    pub fn completed(mut self, at: DateTime<Utc>) -> Self {
+        self.completed_at = Some(at);
+        self
+    }
+
+    /// Whether this step ended without succeeding.
+    pub fn failed(&self) -> bool {
+        self.status == "failed"
+    }
+}
+
+/// A committed checkpoint — §41.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointRecord {
+    pub checkpoint_id: String,
+    pub task_id: TaskId,
+    /// Which step this checkpoint follows.
+    pub label: String,
+    /// Serialised resume state, when the step produced any.
+    pub payload: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One recorded reason to believe a result — Article 4.
+///
+/// The projection of an `evidence.stored` event. Queryable because "show me why this task
+/// was believed" is the question an audit asks, and answering it by replaying the ledger
+/// would make the audit dependent on the thing being audited.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceRecord {
+    pub task_id: TaskId,
+    pub evidence_type: String,
+    /// What produced it, e.g. a capability id or a verifier name.
+    pub producer: String,
+    pub passed: bool,
+    pub recorded_at: DateTime<Utc>,
 }
 
 /// A recorded external effect, keyed for deduplication — Article 5.
@@ -214,6 +308,9 @@ pub trait ArtifactData: std::fmt::Debug {}
 pub trait EvidenceData: std::fmt::Debug {}
 
 // Apply markers to existing types.
+impl EvidenceData for EvidenceRecord {}
+impl StateData for StepRecord {}
+impl StateData for CheckpointRecord {}
 impl StateData for TaskRecord {}
 impl StateData for RunRecord {}
 impl StateData for AttemptRecord {}

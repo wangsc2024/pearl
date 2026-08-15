@@ -9,11 +9,15 @@
 //! 2. **Nothing writes a projection without a corresponding event.** The only way to
 //!    change state is through a method here, each of which records why.
 
-use crate::records::{AttemptRecord, EffectRecord, LeaseRecord, RunRecord, TaskRecord};
+use crate::records::{
+    Artifact, AttemptRecord, CheckpointRecord, ConfigRevision, EffectRecord, EvidenceRecord,
+    LeaseRecord, PolicyDecision, RunRecord, RuntimeHealth, StepRecord, TaskRecord,
+    VerificationResult,
+};
 use chrono::{DateTime, Utc};
 use pearl_core::{
-    AttemptId, EvidenceSet, ExactnessGate, IdempotencyKey, LeaseId, PrecisionClass, QualitySpec,
-    RunId, TaskId, TaskState, TraceId, TransitionError, WorkerId,
+    AttemptId, CheckpointId, EvidenceSet, ExactnessGate, IdempotencyKey, LeaseId, PrecisionClass,
+    QualitySpec, RunId, TaskId, TaskPlan, TaskState, TraceId, TransitionError, WorkerId,
 };
 use pearl_events::{append_in_tx, EventEnvelope, EventLedger, LedgerError, PearlEvent, RunOutcome};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -36,7 +40,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
     attempt_count   INTEGER NOT NULL DEFAULT 0,
-    last_reason     TEXT
+    last_reason     TEXT,
+    -- The declared execution and verification plan, as submitted (§22, §32). JSON rather
+    -- than normalised columns because it is read whole, written once, and never queried
+    -- by field.
+    plan            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks (state);
 
@@ -181,7 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_runtime_health_subsystem ON runtime_health (subsy
 "#;
 
 /// Tables that `rebuild_from_ledger` clears before replaying.
-const PROJECTION_TABLES: [&str; 14] = [
+const PROJECTION_TABLES: [&str; 15] = [
     "tasks",
     "runs",
     "attempts",
@@ -196,6 +204,9 @@ const PROJECTION_TABLES: [&str; 14] = [
     "verification_results",
     "policy_decisions",
     "config_revisions",
+    // Was missing, so a rebuild left stale health rows behind while claiming to have
+    // reconstructed every projection.
+    "runtime_health",
 ];
 
 /// A new task to persist.
@@ -205,6 +216,35 @@ pub struct TaskSubmission {
     pub task_type: String,
     pub precision_class: Option<PrecisionClass>,
     pub quality: QualitySpec,
+    /// What the submitter declared about execution and verification.
+    ///
+    /// Persisted rather than validated-and-discarded: a worker that cannot read the
+    /// declared assurance cannot honour it.
+    pub plan: TaskPlan,
+}
+
+impl TaskSubmission {
+    /// A submission with no execution plan, for callers that only carry a quality contract.
+    pub fn new(
+        task_id: TaskId,
+        task_type: impl Into<String>,
+        precision_class: Option<PrecisionClass>,
+        quality: QualitySpec,
+    ) -> Self {
+        Self {
+            task_id,
+            task_type: task_type.into(),
+            precision_class,
+            quality,
+            plan: TaskPlan::empty(),
+        }
+    }
+
+    /// Attaches a declared plan.
+    pub fn with_plan(mut self, plan: TaskPlan) -> Self {
+        self.plan = plan;
+        self
+    }
 }
 
 /// Materialized state over an event ledger.
@@ -250,6 +290,7 @@ impl StateStore {
             task_type: submission.task_type.clone(),
             precision_class: submission.precision_class,
             quality: submission.quality,
+            plan: submission.plan.clone(),
         };
         let envelope = EventEnvelope::new(trace_id, now, event);
 
@@ -265,6 +306,7 @@ impl StateStore {
             state: TaskState::Created,
             precision_class: submission.precision_class,
             quality: submission.quality,
+            plan: submission.plan,
             created_at: now,
             updated_at: now,
             attempt_count: 0,
@@ -392,7 +434,7 @@ impl StateStore {
             .query_row(
                 "SELECT task_id, trace_id, task_type, state, precision_class,
                         exactness_required, deterministic_generation, deterministic_verification,
-                        created_at, updated_at, attempt_count, last_reason
+                        created_at, updated_at, attempt_count, last_reason, plan
                  FROM tasks WHERE task_id = ?1",
                 params![task_id.as_str()],
                 row_to_task,
@@ -409,7 +451,7 @@ impl StateStore {
         let mut stmt = conn.prepare(
             "SELECT task_id, trace_id, task_type, state, precision_class,
                     exactness_required, deterministic_generation, deterministic_verification,
-                    created_at, updated_at, attempt_count, last_reason
+                    created_at, updated_at, attempt_count, last_reason, plan
              FROM tasks WHERE state = ?1 ORDER BY created_at ASC, task_id ASC",
         )?;
         let rows = stmt.query_map(params![state.as_str()], row_to_task)?;
@@ -430,7 +472,7 @@ impl StateStore {
         let mut stmt = conn.prepare(
             "SELECT task_id, trace_id, task_type, state, precision_class,
                     exactness_required, deterministic_generation, deterministic_verification,
-                    created_at, updated_at, attempt_count, last_reason
+                    created_at, updated_at, attempt_count, last_reason, plan
              FROM tasks ORDER BY task_id ASC",
         )?;
         let rows = stmt.query_map([], row_to_task)?;
@@ -561,6 +603,9 @@ impl StateStore {
             trace_id,
             now,
             PearlEvent::AttemptStarted {
+                // The run determines the task, but the ledger indexes on task_id, so an
+                // attempt without it would not appear in that task's history.
+                task_id: Some(task_id.clone()),
                 run_id,
                 attempt_id,
                 attempt_number,
@@ -607,12 +652,13 @@ impl StateStore {
         let run_id = RunId::parse(&run_id).map_err(|_| StateError::AttemptNotFound {
             attempt_id: attempt_id.to_string(),
         })?;
-        let (_, trace_id) = self.run_owner(run_id)?;
+        let (owner, trace_id) = self.run_owner(run_id)?;
 
         let envelope = EventEnvelope::new(
             trace_id,
             now,
             PearlEvent::AttemptEnded {
+                task_id: Some(owner),
                 run_id,
                 attempt_id,
                 outcome,
@@ -703,6 +749,307 @@ impl StateStore {
         mark_effect_committed(&tx, key, now)?;
         tx.commit()?;
         Ok(())
+    }
+
+    // ----------------------------------------------------------------- steps
+
+    /// Records a step of a run — §43.
+    ///
+    /// Steps are what actually ran, as distinct from the plan, which is what was declared.
+    /// Keeping both makes "the run did not follow its plan" a detectable condition.
+    ///
+    /// Idempotent on `step_id`: a step that moves from running to success is one step with
+    /// two observations, not two steps.
+    pub fn record_step(&mut self, step: &StepRecord) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO steps
+                (step_id, run_id, step_number, description, status, started_at, completed_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                step.step_id,
+                step.run_id.to_string(),
+                step.step_number,
+                step.description,
+                step.status,
+                step.started_at.map(|t| t.to_rfc3339()),
+                step.completed_at.map(|t| t.to_rfc3339()),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The steps of a run, in execution order.
+    pub fn steps_for_run(&self, run_id: RunId) -> Result<Vec<StepRecord>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT step_id, run_id, step_number, description, status, started_at, completed_at
+             FROM steps WHERE run_id = ?1 ORDER BY step_number ASC",
+        )?;
+        let rows = stmt.query_map(params![run_id.to_string()], row_to_step)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    // ----------------------------------------------------------- checkpoints
+
+    /// Commits a checkpoint — §41.
+    ///
+    /// Appends the event and writes the projection in one transaction, so a checkpoint that
+    /// is visible is a checkpoint that was recorded. Resume reads the latest one; a
+    /// checkpoint written outside the ledger could not survive a rebuild.
+    pub fn commit_checkpoint(
+        &mut self,
+        task_id: &TaskId,
+        step_id: &str,
+        payload: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<CheckpointId, StateError> {
+        let task = self
+            .get_task(task_id)?
+            .ok_or_else(|| StateError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
+        let checkpoint_id = CheckpointId::new();
+        let envelope = EventEnvelope::new(
+            task.trace_id,
+            now,
+            PearlEvent::CheckpointCommitted {
+                checkpoint_id,
+                step_id: step_id.to_string(),
+            },
+        );
+
+        let tx = self.ledger.connection_mut().transaction()?;
+        append_in_tx(&tx, &envelope)?;
+        insert_checkpoint(&tx, checkpoint_id, task_id, step_id, payload, now)?;
+        tx.commit()?;
+        Ok(checkpoint_id)
+    }
+
+    /// Every checkpoint for a task, oldest first.
+    pub fn checkpoints_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Vec<CheckpointRecord>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT checkpoint_id, task_id, label, payload, created_at
+             FROM checkpoints WHERE task_id = ?1 ORDER BY created_at ASC, checkpoint_id ASC",
+        )?;
+        let rows = stmt.query_map(params![task_id.as_str()], row_to_checkpoint)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The most recent checkpoint, which is where a resumed run continues from.
+    pub fn latest_checkpoint(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Option<CheckpointRecord>, StateError> {
+        Ok(self.checkpoints_for_task(task_id)?.pop())
+    }
+
+    // -------------------------------------------------- verification results
+
+    /// Records a verifier's verdict — Article 8.
+    pub fn record_verification(
+        &mut self,
+        task_id: &TaskId,
+        verifier_id: &str,
+        passed: bool,
+        detail: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT INTO verification_results (task_id, verifier_id, passed, detail, verified_at)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![
+                task_id.as_str(),
+                verifier_id,
+                passed as i32,
+                detail,
+                now.to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every verdict recorded for a task.
+    pub fn verifications_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Vec<VerificationResult>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT task_id, verifier_id, passed, detail, verified_at
+             FROM verification_results WHERE task_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![task_id.as_str()], row_to_verification)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    // ------------------------------------------------------------- artifacts
+
+    /// Records an artifact a task produced — §44.
+    ///
+    /// Content-addressed by SHA-256 so the index cannot silently point at different bytes
+    /// than the ones that were produced.
+    pub fn record_artifact(&mut self, artifact: &Artifact) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO artifacts
+                (artifact_id, task_id, artifact_type, path, sha256, size_bytes, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                artifact.artifact_id,
+                artifact.task_id.as_str(),
+                artifact.artifact_type,
+                artifact.path,
+                artifact.sha256,
+                artifact.size_bytes as i64,
+                artifact.created_at.to_rfc3339(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every artifact a task produced.
+    pub fn artifacts_for_task(&self, task_id: &TaskId) -> Result<Vec<Artifact>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT artifact_id, task_id, artifact_type, path, sha256, size_bytes, created_at
+             FROM artifacts WHERE task_id = ?1 ORDER BY created_at ASC, artifact_id ASC",
+        )?;
+        let rows = stmt.query_map(params![task_id.as_str()], row_to_artifact)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    // -------------------------------------------------------- runtime health
+
+    /// Records a health observation — §60.
+    pub fn record_health(
+        &mut self,
+        subsystem: &str,
+        status: &str,
+        detail: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT INTO runtime_health (subsystem, status, detail, recorded_at)
+             VALUES (?1,?2,?3,?4)",
+            params![subsystem, status, detail, now.to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The most recent observation per subsystem.
+    pub fn latest_health(&self) -> Result<Vec<RuntimeHealth>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT subsystem, status, detail, recorded_at FROM runtime_health
+             WHERE id IN (SELECT MAX(id) FROM runtime_health GROUP BY subsystem)
+             ORDER BY subsystem ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_health)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    // ------------------------------------------------------ policy decisions
+
+    /// Records a policy or permission decision — §45.
+    pub fn record_policy_decision(
+        &mut self,
+        task_id: Option<&TaskId>,
+        decision_type: &str,
+        outcome: &str,
+        reason: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT INTO policy_decisions (task_id, decision_type, outcome, reason, decided_at)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![
+                task_id.map(|t| t.as_str().to_string()),
+                decision_type,
+                outcome,
+                reason,
+                now.to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every decision recorded for a task.
+    pub fn policy_decisions_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Vec<PolicyDecision>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT task_id, decision_type, outcome, reason, decided_at
+             FROM policy_decisions WHERE task_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![task_id.as_str()], row_to_policy_decision)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    // ------------------------------------------------------ config revisions
+
+    /// Records a configuration revision — Article 10.
+    pub fn record_config_revision(&mut self, revision: &ConfigRevision) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO config_revisions
+                (revision_id, config_hash, source, applied_at, payload)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![
+                revision.revision_id,
+                revision.config_hash,
+                revision.source,
+                revision.applied_at.to_rfc3339(),
+                revision.payload,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A configuration revision by id.
+    pub fn get_config_revision(
+        &self,
+        revision_id: &str,
+    ) -> Result<Option<ConfigRevision>, StateError> {
+        Ok(self
+            .ledger
+            .connection()
+            .query_row(
+                "SELECT revision_id, config_hash, source, applied_at, payload
+                 FROM config_revisions WHERE revision_id = ?1",
+                params![revision_id],
+                row_to_config_revision,
+            )
+            .optional()?)
+    }
+
+    /// Every recorded reason to believe this task's result — Article 4.
+    ///
+    /// Ordered oldest-first so the sequence reads as the argument it is: the execution's own
+    /// output, then each verification that examined it.
+    pub fn evidence_for_task(&self, task_id: &TaskId) -> Result<Vec<EvidenceRecord>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT task_id, evidence_type, producer, passed, recorded_at
+             FROM evidence WHERE task_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![task_id.as_str()], row_to_evidence)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn get_effect(&self, key: &IdempotencyKey) -> Result<Option<EffectRecord>, StateError> {
@@ -946,8 +1293,8 @@ fn insert_task(
         "INSERT INTO tasks
             (task_id, trace_id, task_type, state, precision_class,
              exactness_required, deterministic_generation, deterministic_verification,
-             created_at, updated_at, attempt_count, last_reason)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,NULL)",
+             created_at, updated_at, attempt_count, last_reason, plan)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,NULL,?11)",
         params![
             s.task_id.as_str(),
             trace_id.to_string(),
@@ -959,9 +1306,25 @@ fn insert_task(
             s.quality.deterministic_verification as i32,
             now.to_rfc3339(),
             now.to_rfc3339(),
+            encode_plan(&s.plan)?,
         ],
     )?;
     Ok(())
+}
+
+/// Serialises a plan for storage, or `None` when it declares nothing.
+///
+/// Storing `NULL` for an empty plan keeps the column honest: a row with a plan really did
+/// have one declared.
+fn encode_plan(plan: &TaskPlan) -> Result<Option<String>, StateError> {
+    if plan.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::to_string(plan).map_err(|e| {
+        StateError::PlanEncoding {
+            detail: e.to_string(),
+        }
+    })?))
 }
 
 fn apply_state_change(
@@ -1145,15 +1508,17 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             task_type,
             precision_class,
             quality,
+            plan,
         } => {
-            // The event carries the complete quality contract, so replay reconstructs it
-            // exactly rather than guessing. See ADR-0001 and the replay equivalence test.
+            // The event carries the complete quality contract and the declared plan, so
+            // replay reconstructs both exactly rather than guessing. See ADR-0001, ADR-0002
+            // and the replay equivalence test.
             tx.execute(
                 "INSERT OR REPLACE INTO tasks
                     (task_id, trace_id, task_type, state, precision_class,
                      exactness_required, deterministic_generation, deterministic_verification,
-                     created_at, updated_at, attempt_count, last_reason)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,0,NULL)",
+                     created_at, updated_at, attempt_count, last_reason, plan)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,0,NULL,?10)",
                 params![
                     task_id.as_str(),
                     envelope.trace_id.to_string(),
@@ -1164,6 +1529,7 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
                     quality.deterministic_generation as i32,
                     quality.deterministic_verification as i32,
                     envelope.occurred_at.to_rfc3339(),
+                    encode_plan(plan)?,
                 ],
             )?;
             Ok(true)
@@ -1223,6 +1589,7 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             run_id,
             attempt_id,
             attempt_number,
+            ..
         } => {
             tx.execute(
                 "INSERT OR REPLACE INTO attempts
@@ -1346,6 +1713,32 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
+        PearlEvent::CheckpointCommitted {
+            checkpoint_id,
+            step_id,
+        } => {
+            // §41: resume reads the latest checkpoint, so a rebuild that dropped them would
+            // silently restart completed work. The payload is not in the event, so a replayed
+            // checkpoint records that the step completed but not its resume state — enough to
+            // skip it, which is what resume needs.
+            let Some(task_id) = envelope
+                .event
+                .task_id()
+                .cloned()
+                .or_else(|| task_id_for_trace(tx, envelope.trace_id).ok().flatten())
+            else {
+                return Ok(false);
+            };
+            insert_checkpoint(
+                tx,
+                *checkpoint_id,
+                &task_id,
+                step_id,
+                None,
+                envelope.occurred_at,
+            )?;
+            Ok(true)
+        }
         // Inert by design: audit and metrics only.
         PearlEvent::TaskPlanned { .. }
         | PearlEvent::TaskCompleted { .. }
@@ -1354,15 +1747,152 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
         | PearlEvent::VerificationStarted { .. }
         | PearlEvent::VerificationPassed { .. }
         | PearlEvent::VerificationFailed { .. }
-        | PearlEvent::EffectDeduplicated { .. }
-        | PearlEvent::CheckpointCommitted { .. } => Ok(false),
+        | PearlEvent::EffectDeduplicated { .. } => Ok(false),
     }
 }
 
 // ------------------------------------------------------------- row mappers
 
+/// The task a trace belongs to.
+///
+/// Some events are correlated only by `trace_id` — a checkpoint knows which step it follows,
+/// not which task owns it. Replay resolves the owner from the already-projected tasks table,
+/// which is safe because `task.created` is always the first event on a trace.
+fn task_id_for_trace(
+    tx: &Transaction<'_>,
+    trace_id: TraceId,
+) -> Result<Option<TaskId>, StateError> {
+    let found: Option<String> = tx
+        .query_row(
+            "SELECT task_id FROM tasks WHERE trace_id = ?1 LIMIT 1",
+            params![trace_id.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match found {
+        Some(id) => Some(TaskId::parse(id).map_err(|e| StateError::Projection {
+            detail: e.to_string(),
+        })?),
+        None => None,
+    })
+}
+
+fn insert_checkpoint(
+    tx: &Transaction<'_>,
+    checkpoint_id: CheckpointId,
+    task_id: &TaskId,
+    step_id: &str,
+    payload: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<(), StateError> {
+    tx.execute(
+        "INSERT OR REPLACE INTO checkpoints (checkpoint_id, task_id, label, payload, created_at)
+         VALUES (?1,?2,?3,?4,?5)",
+        params![
+            checkpoint_id.to_string(),
+            task_id.as_str(),
+            step_id,
+            payload,
+            now.to_rfc3339()
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_step(row: &rusqlite::Row<'_>) -> rusqlite::Result<StepRecord> {
+    Ok(StepRecord {
+        step_id: row.get(0)?,
+        run_id: RunId::parse(&row.get::<_, String>(1)?).map_err(to_sqlite_err)?,
+        step_number: row.get::<_, i64>(2)? as u32,
+        description: row.get(3)?,
+        status: row.get(4)?,
+        started_at: parse_time_opt(row, 5)?,
+        completed_at: parse_time_opt(row, 6)?,
+    })
+}
+
+fn row_to_checkpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckpointRecord> {
+    Ok(CheckpointRecord {
+        checkpoint_id: row.get(0)?,
+        task_id: TaskId::parse(row.get::<_, String>(1)?).map_err(to_sqlite_err)?,
+        label: row.get(2)?,
+        payload: row.get(3)?,
+        created_at: parse_time(row, 4)?,
+    })
+}
+
+fn row_to_verification(row: &rusqlite::Row<'_>) -> rusqlite::Result<VerificationResult> {
+    Ok(VerificationResult {
+        task_id: TaskId::parse(row.get::<_, String>(0)?).map_err(to_sqlite_err)?,
+        verifier_id: row.get(1)?,
+        passed: row.get::<_, i32>(2)? != 0,
+        detail: row.get(3)?,
+        verified_at: parse_time(row, 4)?,
+    })
+}
+
+fn row_to_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Artifact> {
+    Ok(Artifact {
+        artifact_id: row.get(0)?,
+        task_id: TaskId::parse(row.get::<_, String>(1)?).map_err(to_sqlite_err)?,
+        artifact_type: row.get(2)?,
+        path: row.get(3)?,
+        sha256: row.get(4)?,
+        size_bytes: row.get::<_, i64>(5)? as u64,
+        created_at: parse_time(row, 6)?,
+    })
+}
+
+fn row_to_health(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuntimeHealth> {
+    Ok(RuntimeHealth {
+        subsystem: row.get(0)?,
+        status: row.get(1)?,
+        detail: row.get(2)?,
+        recorded_at: parse_time(row, 3)?,
+    })
+}
+
+fn row_to_policy_decision(row: &rusqlite::Row<'_>) -> rusqlite::Result<PolicyDecision> {
+    let task_id: Option<String> = row.get(0)?;
+    Ok(PolicyDecision {
+        task_id: match task_id {
+            Some(id) => Some(TaskId::parse(id).map_err(to_sqlite_err)?),
+            None => None,
+        },
+        decision_type: row.get(1)?,
+        outcome: row.get(2)?,
+        reason: row.get(3)?,
+        decided_at: parse_time(row, 4)?,
+    })
+}
+
+fn row_to_config_revision(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConfigRevision> {
+    Ok(ConfigRevision {
+        revision_id: row.get(0)?,
+        config_hash: row.get(1)?,
+        source: row.get(2)?,
+        applied_at: parse_time(row, 3)?,
+        payload: row.get(4)?,
+    })
+}
+
+fn row_to_evidence(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRecord> {
+    Ok(EvidenceRecord {
+        task_id: TaskId::parse(row.get::<_, String>(0)?).map_err(to_sqlite_err)?,
+        evidence_type: row.get(1)?,
+        producer: row.get(2)?,
+        passed: row.get::<_, i32>(3)? != 0,
+        recorded_at: parse_time(row, 4)?,
+    })
+}
+
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
     let precision: Option<String> = row.get(4)?;
+    let plan: Option<String> = row.get(12)?;
+    let plan = match plan {
+        Some(json) => serde_json::from_str(&json).map_err(to_sqlite_err)?,
+        None => TaskPlan::empty(),
+    };
     Ok(TaskRecord {
         task_id: TaskId::parse(row.get::<_, String>(0)?).map_err(to_sqlite_err)?,
         trace_id: TraceId::parse(&row.get::<_, String>(1)?).map_err(to_sqlite_err)?,
@@ -1376,6 +1906,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
             "p3" => Some(PrecisionClass::P3),
             _ => None,
         }),
+        plan,
         quality: QualitySpec {
             exactness_required: row.get::<_, i32>(5)? != 0,
             deterministic_generation: row.get::<_, i32>(6)? != 0,
@@ -1460,6 +1991,12 @@ fn to_sqlite_err<E: std::fmt::Display>(e: E) -> rusqlite::Error {
 pub enum StateError {
     #[error("task '{task_id}' already exists")]
     TaskAlreadyExists { task_id: String },
+    /// The declared plan could not be serialised for storage.
+    #[error("failed to encode the task plan: {detail}")]
+    PlanEncoding { detail: String },
+    /// A stored value could not be projected back into its type.
+    #[error("failed to project a stored value: {detail}")]
+    Projection { detail: String },
     #[error("task '{task_id}' not found")]
     TaskNotFound { task_id: String },
     #[error("run '{run_id}' not found")]

@@ -201,11 +201,10 @@ mod tests {
             id: id.to_string(),
             version: 1,
             capability_type: CapabilityType::Script,
+            functional_kind: None,
             description: Some("A mechanical script".to_string()),
-            execution: Execution {
-                kind: ExecutionKind::Script,
-                runtime,
-            },
+            execution: Execution::script(runtime, format!("{id}.script")),
+            retry: None,
             quality: Quality {
                 deterministic: true,
             },
@@ -229,11 +228,10 @@ mod tests {
             id: id.to_string(),
             version: 1,
             capability_type: CapabilityType::Agent,
+            functional_kind: None,
             description: Some("An agent capability".to_string()),
-            execution: Execution {
-                kind: ExecutionKind::Agent,
-                runtime: Runtime::ClaudeCode,
-            },
+            execution: Execution::new(ExecutionKind::Agent, Runtime::ClaudeCode),
+            retry: None,
             quality: Quality {
                 deterministic: false,
             },

@@ -36,6 +36,7 @@ fn concurrent_task_creation_does_not_corrupt_state() {
             task_type: "chaos-test".to_string(),
             precision_class: Some(pearl_core::PrecisionClass::P0),
             quality: pearl_core::QualitySpec::mechanical(),
+        plan: Default::default(),
         };
         let record = store.create_task(submission, now).unwrap();
         assert_eq!(record.state, TaskState::Created);
@@ -101,6 +102,7 @@ fn expired_lease_is_reclaimed_after_worker_death() {
         task_type: "work".to_string(),
         precision_class: None,
         quality: pearl_core::QualitySpec::best_effort(),
+        plan: Default::default(),
     };
     store.create_task(submission, now).unwrap();
     store
@@ -150,6 +152,7 @@ fn duplicate_task_creation_is_rejected_not_panicked() {
         task_type: "test".to_string(),
         precision_class: None,
         quality: pearl_core::QualitySpec::mechanical(),
+        plan: Default::default(),
     };
 
     // First creation succeeds.
@@ -177,6 +180,7 @@ fn rapid_state_transitions_maintain_consistency() {
         task_type: "rapid".to_string(),
         precision_class: None,
         quality: pearl_core::QualitySpec::best_effort(),
+        plan: Default::default(),
     };
     store.create_task(submission, now).unwrap();
 

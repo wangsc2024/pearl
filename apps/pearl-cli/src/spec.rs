@@ -1,6 +1,6 @@
 //! Task spec loading — mirrors `schemas/task-spec-v1.json`.
 
-use pearl_core::{PrecisionClass, QualitySpec, TaskId};
+use pearl_core::{AssuranceStep, PrecisionClass, QualitySpec, TaskId, TaskPlan};
 use pearl_state::TaskSubmission;
 use serde::{Deserialize, Serialize};
 
@@ -21,19 +21,6 @@ pub struct TaskSpec {
     pub assurance: Vec<AssuranceStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
-}
-
-/// One verification step.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AssuranceStep {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence_required: Option<bool>,
 }
 
 impl TaskSpec {
@@ -85,12 +72,28 @@ impl TaskSpec {
             }
         }
 
-        Ok(TaskSubmission {
-            task_id,
-            task_type: self.task_type,
-            precision_class: self.precision_class,
-            quality: self.quality,
-        })
+        // A declared step that names nothing verifies nothing, so it must not be able to
+        // satisfy the Article 2 gate above by merely existing.
+        if let Some(index) = self.assurance.iter().position(AssuranceStep::is_empty) {
+            return Err(SpecError::Invalid {
+                detail: format!(
+                    "assurance step {} declares none of schema, script or test, so it would verify nothing",
+                    index + 1
+                ),
+            });
+        }
+
+        Ok(
+            TaskSubmission::new(task_id, self.task_type, self.precision_class, self.quality)
+                // Carried into the ledger rather than discarded here: a worker that cannot read the
+                // declared plan cannot honour it, and the Article 2 gate above would then have
+                // approved a promise nothing kept.
+                .with_plan(TaskPlan {
+                    capability: self.capability,
+                    assurance: self.assurance,
+                    timeout_seconds: self.timeout_seconds,
+                }),
+        )
     }
 }
 
@@ -204,6 +207,57 @@ assurance:
     evidence_required: true
 "#;
         assert!(TaskSpec::parse(yaml).unwrap().into_submission().is_ok());
+    }
+
+    #[test]
+    fn the_declared_plan_survives_into_the_submission() {
+        // The whole point: a worker later reads this back out of the ledger. If the plan
+        // were dropped here, the Article 2 gate above would have approved a promise that
+        // nothing was left to keep.
+        let yaml = r#"
+id: t1
+version: 1
+task_type: scoring
+capability: script.task-score
+timeout_seconds: 45
+quality:
+  exactness_required: true
+  deterministic_generation: true
+  deterministic_verification: true
+assurance:
+  - schema: verification-result-v1
+  - script: verifier.task-result
+    evidence_required: true
+"#;
+        let submission = TaskSpec::parse(yaml).unwrap().into_submission().unwrap();
+        assert_eq!(
+            submission.plan.capability.as_deref(),
+            Some("script.task-score")
+        );
+        assert_eq!(submission.plan.timeout_seconds, Some(45));
+        assert_eq!(submission.plan.assurance.len(), 2);
+        assert!(submission.plan.has_assurance());
+    }
+
+    #[test]
+    fn an_assurance_step_that_names_nothing_is_rejected() {
+        // `assurance: [{}]` would otherwise pass the Article 2 gate while verifying nothing.
+        let yaml = r#"
+id: t1
+version: 1
+task_type: research
+quality:
+  exactness_required: true
+  deterministic_generation: false
+  deterministic_verification: false
+assurance:
+  - evidence_required: true
+"#;
+        let err = TaskSpec::parse(yaml)
+            .unwrap()
+            .into_submission()
+            .unwrap_err();
+        assert!(matches!(err, SpecError::Invalid { .. }), "got: {err:?}");
     }
 
     #[test]

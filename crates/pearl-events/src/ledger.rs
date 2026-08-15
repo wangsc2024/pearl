@@ -292,6 +292,7 @@ mod tests {
             task_type: "digest".into(),
             precision_class: Some(PrecisionClass::P1),
             quality: QualitySpec::mechanical(),
+            plan: pearl_core::TaskPlan::empty(),
         }
     }
 
