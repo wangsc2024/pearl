@@ -559,3 +559,84 @@ fn notify_reports_an_unreachable_hub_as_a_failed_attempt() {
         "got {output}"
     );
 }
+
+// ------------------------------------------------------------- shipped prompts
+//
+// An agent capability's entrypoint is a prompt template, and `prompt::validate` is the check
+// that runs before any model is contacted: an unfillable prompt costs nothing. That makes it
+// exactly the property worth testing here, because it is decidable without a model — and
+// because the failure it catches is silent. A prompt referencing `{{subject}}` when the
+// workflow supplies `topic` renders fine right up until it is asked to, and then fails inside
+// a run that has already claimed a lease.
+
+/// Every `{{placeholder}}` in a shipped prompt must be fillable from the payload its workflow
+/// actually provides. The payloads below mirror the `input_from` blocks in
+/// `capabilities/workflows/` and `applications/ddp/workflows/`.
+#[test]
+fn shipped_prompts_render_from_the_payloads_their_workflows_supply() {
+    let cases: &[(&str, serde_json::Value)] = &[
+        (
+            "applications/ddp/prompts/zen_koan_compose.md",
+            // ddp.zen-koan's `compose` step takes exactly these from `select`.
+            serde_json::json!({ "topic": "趙州狗子", "source": "禪宗公案選集" }),
+        ),
+        (
+            "capabilities/agents/prompts/propose_plan.md",
+            // A planning step gets task identity plus whatever the run is about.
+            serde_json::json!({
+                "task_id": "t.1",
+                "task_type": "digest",
+                "context": { "items": [1, 2] },
+            }),
+        ),
+        (
+            "capabilities/agents/prompts/synthesize.md",
+            serde_json::json!({ "task_id": "t.1", "task_type": "digest", "facts": [] }),
+        ),
+    ];
+
+    for (relative, payload) in cases {
+        let path = workspace_root().join(relative);
+        assert!(path.exists(), "{relative} is missing");
+
+        let spec = ScriptSpec {
+            runtime: pearl_governance::manifest::Runtime::LlamaCpp,
+            entrypoint: path,
+            args: vec![],
+            env: BTreeMap::new(),
+            cwd: None,
+            timeout: TimeDelta::try_seconds(30).unwrap(),
+            input_payload: Some(payload.clone()),
+        };
+
+        pearl_runtime::prompt::validate(&spec)
+            .unwrap_or_else(|e| panic!("{relative} cannot be rendered from its payload: {e}"));
+
+        let rendered = pearl_runtime::prompt::render(&spec)
+            .unwrap_or_else(|e| panic!("{relative} failed to render: {e}"));
+        assert!(
+            !rendered.contains("{{"),
+            "{relative} still has an unrendered placeholder"
+        );
+    }
+}
+
+/// The converse, so the test above is known to be capable of failing: a payload missing a key
+/// the prompt needs is refused, and the error names the key.
+#[test]
+fn a_prompt_whose_payload_lacks_a_key_is_refused_before_any_model_is_called() {
+    let path = workspace_root().join("applications/ddp/prompts/zen_koan_compose.md");
+    let spec = ScriptSpec {
+        runtime: pearl_governance::manifest::Runtime::LlamaCpp,
+        entrypoint: path,
+        args: vec![],
+        env: BTreeMap::new(),
+        cwd: None,
+        timeout: TimeDelta::try_seconds(30).unwrap(),
+        // `source` withheld: this is what a workflow that forgot an `input_from` line looks like.
+        input_payload: Some(serde_json::json!({ "topic": "趙州狗子" })),
+    };
+
+    let err = pearl_runtime::prompt::validate(&spec).unwrap_err();
+    assert!(err.to_string().contains("source"), "got {err}");
+}

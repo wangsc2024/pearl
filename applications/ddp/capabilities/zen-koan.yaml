@@ -61,14 +61,15 @@ id: agent.zen-koan-compose
 version: 1
 type: agent
 kind: transformer
-description: |
-  Writes up a chosen koan as structured Markdown. NOT IMPLEMENTED -- no entrypoint yet; the
-  prompt has to be ported from DDP's prompts/fragments/zen_koan_format_loose.md.
+description: Writes up a chosen koan as three sections of Markdown.
 execution:
   kind: agent
   # A local llama.cpp server, which is what made this task free to run in DDP. The runtime is
   # named so a permission rule can allow the local model without allowing paid endpoints.
   runtime: llama_cpp
+  entrypoint:
+    # A prompt template. Article 3's mirror: prompt content belongs in a reviewable file.
+    script: ../prompts/zen_koan_compose.md
 quality:
   # Article 1: a model writing prose cannot promise the same output twice, and declaring
   # otherwise would let the mechanical determinism check pass for something that reasons.

@@ -61,9 +61,11 @@ PLACEHOLDER = "（待補）"
 # 典故 is a model that gave up. A uniform floor gets one of those two wrong, and the first
 # version of this port got it wrong in the direction that rejects good koans.
 #
-# The floor of 1 on 禪門一語 is doing real work alongside the placeholder check: together they
-# mean "there is a line here and it is not the one we invented".
-DEFAULT_MIN_SECTION = {"典故": 20, "白話釋義": 20, "禪門一語": 1}
+# The numbers are the lower bounds the prompt asks for (50-120, 50-100, 10-20 characters), so
+# `complete` means "the model delivered what it was told to" rather than "the model produced
+# something". Inventing floors independently of the prompt is how the first version of this
+# port came to reject a real koan.
+DEFAULT_MIN_SECTION = {"典故": 50, "白話釋義": 50, "禪門一語": 10}
 
 
 def fail(detail, code=2):
