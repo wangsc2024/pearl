@@ -2,7 +2,7 @@
   "id": "FEAT-005",
   "type": "feat",
   "description": "Implement pearl-scheduler crate: scheduling engine with cron/interval/one-shot/conditional triggers, misfire policy, and profile-aware throttling. Reference: daily_rust src/scheduler/mod.rs SchedulerEngine pattern. The scheduler determines WHEN tasks become eligible, working with the queue to make them READY. It supports: cron expressions, fixed intervals, one-shot (manual trigger), and conditional (predicate-based). Misfire policy handles what happens when a scheduled time is missed (skip, run-once, run-all). Profile degradation limits concurrency.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create crates/pearl-scheduler/Cargo.toml depending on pearl-core (Clock, RuntimeProfile, TaskId), pearl-state (StateStore), pearl-queue (WorkQueue), serde, serde_yaml, chrono, thiserror. Use workspace.dependencies. NOTE: do NOT add 'cron' crate dependency since it requires network; implement schedule matching with chrono directly for basic patterns.",
     "Add pearl-scheduler to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-scheduler = { path = 'crates/pearl-scheduler' } to [workspace.dependencies].",
@@ -35,5 +35,5 @@
     "cargo fmt --all --check"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "TaskId uses parse() not generate(). Added atomic counter helper for unique test IDs. serde_json needed as dev-dependency for round-trip tests. All 380 workspace tests pass (36 new + 344 existing)."
 }
