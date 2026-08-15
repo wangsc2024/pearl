@@ -10,6 +10,7 @@ members = [
     "crates/pearl-governance",
     "crates/pearl-precision",
     "crates/pearl-runtime",
+    "crates/pearl-capabilities",
     "apps/pearl-cli",
 ]
 
@@ -31,6 +32,7 @@ pearl-process-supervisor = { path = "crates/pearl-process-supervisor" }
 pearl-governance = { path = "crates/pearl-governance" }
 pearl-precision = { path = "crates/pearl-precision" }
 pearl-runtime = { path = "crates/pearl-runtime" }
+pearl-capabilities = { path = "crates/pearl-capabilities" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
