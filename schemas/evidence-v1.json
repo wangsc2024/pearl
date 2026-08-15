@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-v1.json",
+  "title": "PEARL Evidence v1",
+  "description": "A single reason to believe a result. Article 4: no evidence, no VERIFIED_SUCCESS.",
+  "type": "object",
+  "required": ["type", "producer", "timestamp", "result"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["source", "api_response", "test", "schema", "hash", "tool_output", "git_diff", "human_approval"]
+    },
+    "producer": {
+      "type": "string",
+      "description": "What generated this evidence, e.g. pytest, cargo test, jsonschema."
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "artifact": {
+      "type": "string",
+      "description": "Path or URI to the retained artifact backing this evidence."
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of the artifact, so evidence cannot be silently swapped."
+    },
+    "result": { "type": "string", "enum": ["pass", "fail"] }
+  }
+}

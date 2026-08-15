@@ -1,0 +1,19 @@
+[package]
+name = "pearl-lease"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PEARL worker leases: claim, heartbeat, expiry and reclamation."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-events.workspace = true
+pearl-state.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

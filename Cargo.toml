@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pearl-core",
+    "crates/pearl-events",
+    "crates/pearl-state",
+    "crates/pearl-lease",
+    "crates/pearl-queue",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/wangsc2024/pearl"
+
+[workspace.dependencies]
+# Internal
+pearl-core = { path = "crates/pearl-core" }
+pearl-events = { path = "crates/pearl-events" }
+pearl-state = { path = "crates/pearl-state" }
+pearl-lease = { path = "crates/pearl-lease" }
+pearl-queue = { path = "crates/pearl-queue" }
+pearl-process-supervisor = { path = "crates/pearl-process-supervisor" }
+pearl-governance = { path = "crates/pearl-governance" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Identity: UUIDv7 for time-sortable ledger ids (ADR-0001)
+uuid = { version = "1.11", features = ["v7", "serde"] }
+
+# Persistence: bundled SQLite so the kernel has no external service dependency
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
+
+# Hashing for config_hash (Article 10) and evidence digests (Article 4)
+sha2 = "0.10"
+hex = "0.4"
+
+# Errors
+thiserror = "2.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Unix process-group signalling for tree kill (Article 9)
+nix = { version = "0.29", features = ["signal", "process"] }
+
+# Test-only
+tempfile = "3.13"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

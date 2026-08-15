@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "capability-manifest-v1.json",
+  "title": "PEARL Capability Manifest v1",
+  "description": "Registry entry for any executable capability. Article 1 forbids deterministic work from being routed to an agent; Article 5 requires idempotency on side effects; Article 9 requires cancellability.",
+  "type": "object",
+  "required": ["id", "version", "type", "execution", "quality", "risk", "platform"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "description": "Dotted capability id, e.g. verifier.config-consistency"
+    },
+    "version": { "type": "integer", "minimum": 1 },
+    "type": {
+      "type": "string",
+      "enum": ["script", "tool", "verifier", "skill", "agent", "workflow", "runtime", "guard"]
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["collector", "transformer", "validator", "verifier", "guard", "effect", "repair", "migration", "diagnostic"],
+      "description": "Functional classification within the registry."
+    },
+    "description": { "type": "string" },
+    "execution": {
+      "type": "object",
+      "required": ["kind", "runtime"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["script", "tool", "agent", "workflow", "human_gate"]
+        },
+        "runtime": {
+          "type": "string",
+          "enum": ["rust", "python", "powershell", "shell", "claude_code", "codex", "cursor", "openai_compatible", "llama_cpp", "native"]
+        },
+        "entrypoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "module": { "type": "string" },
+            "binary": { "type": "string" },
+            "script": { "type": "string" },
+            "args": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "required": ["deterministic"],
+      "additionalProperties": false,
+      "properties": {
+        "deterministic": {
+          "type": "boolean",
+          "description": "Same input yields same output. Asserted by determinism tests."
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": ["side_effect"],
+      "additionalProperties": false,
+      "properties": {
+        "side_effect": { "type": "boolean" },
+        "idempotency": {
+          "type": "object",
+          "required": ["key_template"],
+          "additionalProperties": false,
+          "properties": {
+            "key_template": { "type": "string" }
+          }
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "required": ["windows", "linux"],
+      "additionalProperties": false,
+      "properties": {
+        "windows": { "type": "boolean" },
+        "linux": { "type": "boolean" }
+      }
+    },
+    "schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input": { "type": "string" },
+        "output": { "type": "string" }
+      }
+    },
+    "timeout_seconds": { "type": "integer", "minimum": 1 },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "on_error": {
+      "type": "string",
+      "enum": ["deny", "allow"],
+      "description": "Guards must declare deny (Article 7 fail-closed). Hooks may declare allow."
+    }
+  },
+  "allOf": [
+    {
+      "description": "Article 1: deterministic capabilities must execute as scripts, never as agents.",
+      "if": {
+        "properties": { "quality": { "properties": { "deterministic": { "const": true } }, "required": ["deterministic"] } },
+        "required": ["quality"]
+      },
+      "then": {
+        "properties": { "execution": { "properties": { "kind": { "const": "script" } } } }
+      }
+    },
+    {
+      "description": "Article 5: a side-effecting capability must declare an idempotency key template.",
+      "if": {
+        "properties": { "risk": { "properties": { "side_effect": { "const": true } }, "required": ["side_effect"] } },
+        "required": ["risk"]
+      },
+      "then": {
+        "properties": { "risk": { "required": ["idempotency"] } }
+      }
+    },
+    {
+      "description": "Article 7: guards must fail closed.",
+      "if": {
+        "properties": { "type": { "const": "guard" } },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": { "on_error": { "const": "deny" } },
+        "required": ["on_error"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task-spec-v1.json",
+  "title": "PEARL Task Spec v1",
+  "description": "Declarative submission format for a PEARL task. Enforces Constitution Article 2 (exactness requires a verifier) and Article 5 (side effects require idempotency).",
+  "type": "object",
+  "required": ["id", "version", "task_type", "quality"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "description": "Stable task identifier, used to derive idempotency keys."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Spec revision. Required so a task shape change is never silent."
+    },
+    "task_type": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_]*$",
+      "description": "Routing key into the Config Resolution chain (Article 10)."
+    },
+    "description": { "type": "string" },
+    "precision_class": {
+      "type": "string",
+      "enum": ["p0", "p1", "p2", "p3"],
+      "description": "p0 deterministic, p1 generative-but-verifiable, p2 partially verifiable, p3 subjective. Omit to let the Precision Decision Engine classify."
+    },
+    "quality": {
+      "type": "object",
+      "required": ["exactness_required", "deterministic_verification"],
+      "additionalProperties": false,
+      "properties": {
+        "exactness_required": {
+          "type": "boolean",
+          "description": "True when the business requires exact confirmation."
+        },
+        "deterministic_generation": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the output itself is produced mechanically."
+        },
+        "deterministic_verification": {
+          "type": "boolean",
+          "description": "True when a Machine Verifier can decide correctness. If exactness_required is true and this is false, auto-complete is blocked (Article 2)."
+        }
+      }
+    },
+    "capability": {
+      "type": "string",
+      "description": "Capability id to execute. Resolved against the Capability Registry."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Opaque input handed to the capability."
+    },
+    "assurance": {
+      "type": "array",
+      "description": "Verification steps that must pass before VERIFIED_SUCCESS (Article 4).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema": { "type": "string" },
+          "script": { "type": "string" },
+          "test": { "type": "string" },
+          "evidence_required": { "type": "boolean" }
+        }
+      }
+    },
+    "side_effects": {
+      "type": "array",
+      "description": "Declared external effects. Each requires an idempotency key template (Article 5).",
+      "items": {
+        "type": "object",
+        "required": ["effect", "idempotency_key"],
+        "additionalProperties": false,
+        "properties": {
+          "effect": { "type": "string" },
+          "idempotency_key": {
+            "type": "string",
+            "description": "Template, e.g. todoist:complete:{task_id}:{run_id}"
+          }
+        }
+      }
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Hard execution ceiling. Required by the workflow timeout CI check."
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "backoff_seconds": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "Article 2: exactness_required with no deterministic_verification must declare assurance, otherwise the task cannot auto-complete.",
+      "if": {
+        "properties": {
+          "quality": {
+            "properties": {
+              "exactness_required": { "const": true },
+              "deterministic_verification": { "const": false }
+            },
+            "required": ["exactness_required", "deterministic_verification"]
+          }
+        },
+        "required": ["quality"]
+      },
+      "then": { "required": ["assurance"] }
+    }
+  ]
+}
