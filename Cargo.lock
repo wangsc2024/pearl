@@ -652,6 +652,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-scheduler"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pearl-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "pearl-state"
 version = "0.1.0"
 dependencies = [

@@ -12,6 +12,7 @@ members = [
     "crates/pearl-runtime",
     "crates/pearl-capabilities",
     "crates/pearl-guard",
+    "crates/pearl-scheduler",
     "apps/pearl-cli",
 ]
 
@@ -35,6 +36,7 @@ pearl-precision = { path = "crates/pearl-precision" }
 pearl-runtime = { path = "crates/pearl-runtime" }
 pearl-capabilities = { path = "crates/pearl-capabilities" }
 pearl-guard = { path = "crates/pearl-guard" }
+pearl-scheduler = { path = "crates/pearl-scheduler" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

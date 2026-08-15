@@ -1,0 +1,39 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Implement pearl-scheduler crate: scheduling engine with cron/interval/one-shot/conditional triggers, misfire policy, and profile-aware throttling. Reference: daily_rust src/scheduler/mod.rs SchedulerEngine pattern. The scheduler determines WHEN tasks become eligible, working with the queue to make them READY. It supports: cron expressions, fixed intervals, one-shot (manual trigger), and conditional (predicate-based). Misfire policy handles what happens when a scheduled time is missed (skip, run-once, run-all). Profile degradation limits concurrency.",
+  "status": "in_progress",
+  "steps": [
+    "Create crates/pearl-scheduler/Cargo.toml depending on pearl-core (Clock, RuntimeProfile, TaskId), pearl-state (StateStore), pearl-queue (WorkQueue), serde, serde_yaml, chrono, thiserror. Use workspace.dependencies. NOTE: do NOT add 'cron' crate dependency since it requires network; implement schedule matching with chrono directly for basic patterns.",
+    "Add pearl-scheduler to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-scheduler = { path = 'crates/pearl-scheduler' } to [workspace.dependencies].",
+    "Create crates/pearl-scheduler/src/lib.rs with module doc explaining this implements the scheduling engine that determines task eligibility. Article 3: scheduling is infrastructure that belongs in code, never in prompts.",
+    "Define Schedule enum: Cron { expression: String, timezone: String }, Interval { every: TimeDelta }, OneShot { at: Option<DateTime<Utc>> }, Manual, Disabled.",
+    "Define MisfirePolicy enum: Skip (if missed, skip that occurrence), RunOnce (if missed, fire once on next poll), RunAll (if missed, fire all missed occurrences).",
+    "Define ScheduledTask struct: task_id (TaskId), schedule (Schedule), misfire_policy (MisfirePolicy), last_triggered_at (Option<DateTime<Utc>>), enabled (bool).",
+    "Implement a simple CronExpr parser that handles basic patterns: '* * * * *' (every minute), '0 * * * *' (every hour), '0 0 * * *' (daily), '0 0 * * 1' (weekly monday). Support field matching for minute, hour, day-of-month, month, day-of-week. This avoids the external cron crate dependency.",
+    "Implement SchedulerEngine struct holding a Vec<ScheduledTask> and a Clock reference. Method: poll(now: DateTime<Utc>) -> Vec<TaskId> that returns task IDs that should be triggered at this moment. Method: is_due(task: &ScheduledTask, now: DateTime<Utc>) -> bool.",
+    "Implement interval logic: a task is due if now - last_triggered_at >= every. Implement cron logic: a task is due if the current minute matches the cron expression and it has not already fired in this minute.",
+    "Implement misfire handling: apply_misfire_policy(task, now, missed_since) that determines what to do about triggers missed while the system was down.",
+    "Implement profile-aware throttling via ProfileThrottle struct: given a RuntimeProfile, limit how many tasks can be triggered per poll cycle. Reference daily_rust effective_parallel() pattern.",
+    "Write comprehensive tests: interval triggers correctly, cron matches basic patterns (every minute, hourly, daily, weekly), one-shot fires once then disables, manual never auto-fires, misfire skip/run-once/run-all produce correct behavior, profile throttle limits concurrent triggers.",
+    "Ensure cargo test --workspace passes, clippy -D warnings clean, fmt clean."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p pearl-scheduler succeeds",
+    "All tests in pearl-scheduler pass",
+    "Interval scheduling triggers at correct times",
+    "Basic cron expression matching works for common patterns",
+    "One-shot fires once then never again",
+    "Misfire policies produce correct behavior",
+    "Profile throttling limits triggered tasks",
+    "cargo clippy --workspace --all-targets -- -D warnings passes",
+    "cargo fmt --all --check passes"
+  ],
+  "verification": [
+    "cargo test -p pearl-scheduler",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all --check"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
