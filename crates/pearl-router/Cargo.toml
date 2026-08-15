@@ -1,0 +1,22 @@
+[package]
+name = "pearl-router"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Script-first routing engine and health monitor (Article 1)."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-precision.workspace = true
+pearl-capabilities.workspace = true
+pearl-governance.workspace = true
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pearl-runtime.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

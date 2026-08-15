@@ -638,6 +638,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-router"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pearl-capabilities",
+ "pearl-core",
+ "pearl-governance",
+ "pearl-precision",
+ "pearl-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "pearl-runtime"
 version = "0.1.0"
 dependencies = [
