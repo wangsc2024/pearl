@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "feat",
   "description": "Implement pearl-capabilities crate: the Capability Manifest Registry. This is the runtime catalog that indexes all registered capabilities (from YAML manifests), enabling lookup by id, by type, by runtime, and by precision class. The registry loads from a directory of YAML manifests (like capabilities/ in the repo), validates each against Constitution rules, and provides query methods for the router to find matching capabilities. Reference: DDP workflows/index.yaml and the existing pearl-governance CapabilityManifest type.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create crates/pearl-capabilities/Cargo.toml depending on pearl-core, pearl-governance (for CapabilityManifest, CapabilityType, Runtime, ExecutionKind), pearl-precision, serde, serde_yaml, thiserror. Use workspace.dependencies.",
     "Add pearl-capabilities to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-capabilities = { path = 'crates/pearl-capabilities' } to [workspace.dependencies].",
@@ -31,5 +31,5 @@
     "cargo fmt --all --check"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All 303 workspace tests pass (23 new in pearl-capabilities). Constitution gate passes (4 manifests inspected). Clippy clean. Fmt clean. The registry loads from the real capabilities/ directory and classifies all 3 manifests as P0. Used ClassificationInput::from_manifest_inferred for classification without an explicit QualitySpec."
 }
