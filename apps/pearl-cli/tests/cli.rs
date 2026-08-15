@@ -105,7 +105,24 @@ fn submit_then_inspect_round_trip() {
     assert_eq!(code(&inspect), 0);
     let text = stdout(&inspect);
     assert!(text.contains("daily.digest"));
-    assert!(text.contains("created"));
+    // A submitted spec is admitted to READY, because its plan was declared in the spec and a
+    // task no worker can claim is inert. `--hold` is the way to stop at CREATED.
+    assert!(text.contains("ready"), "got {text}");
+}
+
+#[test]
+fn a_held_submission_stays_out_of_the_queue_until_something_admits_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let spec = spec_file(dir.path(), "digest.yaml", MECHANICAL_SPEC);
+
+    let submit = run(&db, &["task", "submit", spec.to_str().unwrap(), "--hold"]);
+    assert_eq!(code(&submit), 0, "stderr: {}", stderr(&submit));
+
+    let (_, json) = run_json(&db, &["task", "inspect", "daily.digest"]);
+    assert_eq!(json["task"]["state"], "created");
+    let (_, queue) = run_json(&db, &["queue", "status"]);
+    assert_eq!(queue["depth"], 0, "a held task is not claimable");
 }
 
 #[test]
@@ -155,7 +172,7 @@ fn json_mode_emits_only_json_on_stdout() {
     let (output, json) = run_json(&db, &["task", "inspect", "daily.digest"]);
     assert_eq!(code(&output), 0);
     assert_eq!(json["task"]["task_id"], "daily.digest");
-    assert_eq!(json["task"]["state"], "created");
+    assert_eq!(json["task"]["state"], "ready");
     assert!(json["runs"].is_array());
 }
 
@@ -234,9 +251,9 @@ fn queue_status_reports_depth() {
     let spec = spec_file(dir.path(), "digest.yaml", MECHANICAL_SPEC);
     run(&db, &["task", "submit", spec.to_str().unwrap()]);
 
-    // A freshly created task is not yet READY, so the queue is empty.
+    // Submitting admits the task, so it is claimable and the queue has depth.
     let (_, json) = run_json(&db, &["queue", "status"]);
-    assert_eq!(json["depth"], 0);
+    assert_eq!(json["depth"], 1);
     assert_eq!(json["retry_wait"], 0);
 }
 
@@ -282,10 +299,8 @@ timeout_seconds: 60
         use pearl_state::StateStore;
         let mut store = StateStore::open(&store_path).unwrap();
         let id = TaskId::parse("research.citations").unwrap();
+        // Submission already walked it to READY, so the run starts from there.
         for state in [
-            TaskState::Planning,
-            TaskState::Planned,
-            TaskState::Ready,
             TaskState::Leased,
             TaskState::Running,
             TaskState::Verifying,

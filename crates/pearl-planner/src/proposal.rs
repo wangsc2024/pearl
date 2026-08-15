@@ -82,7 +82,7 @@ fn default_timeout_secs() -> u64 {
 }
 
 /// One step of a proposed plan.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposedStep {
     /// Unique within the proposal.
@@ -159,7 +159,7 @@ impl ProposedStep {
 }
 
 /// A plan produced at runtime rather than written by hand — §40's dynamic form.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanProposal {
     /// The steps to run.

@@ -1,0 +1,65 @@
+# pingtung_event_digest -- fetch, check, push.
+#
+# The DDP original was one shell doing all three. Splitting it is what makes each claim
+# checkable: the fetch can be retried because it changes nothing, the check runs against the
+# document the fetch actually produced, and the push is an effect with an idempotency key so a
+# retried run cannot send twice.
+#
+# Note what `verify` is for here. It is not "did the fetch succeed" -- exit 0 already said
+# that. It is "did the fetch return something worth sending", which is a different question
+# and the one that matters: an empty calendar and a broken parser both exit 0, and only one of
+# them should reach the operator's phone.
+name: ddp.pingtung-event-digest
+description: Fetches upcoming Pingtung events, verifies the digest is non-empty, then pushes it.
+
+steps:
+  - id: fetch
+    capability: script.fetch-pingtung-events
+    step_type: run
+    timeout_secs: 120
+    input:
+      days: 14
+      limit: 15
+    # The push below depends on this being right, so it is declared load-bearing and the
+    # verify step is what makes the declaration legal (SS 30).
+    exactness_required: true
+
+  - id: check
+    capability: verifier.task-result
+    step_type: verify
+    depends_on: [fetch]
+    timeout_secs: 30
+    input_from:
+      # The document under test is the one `fetch` printed, not a re-derivation of it.
+      result: steps.fetch.output
+    input:
+      require_keys: [events, fetched_at, source]
+      types:
+        events: array
+      # An empty list is a successful fetch and not a digest. Sending "here is nothing" every
+      # day is how a notification channel becomes noise that gets muted.
+      non_empty: [events]
+
+  - id: push
+    capability: effect.notify
+    step_type: effect
+    # Both: `check` because nothing should be sent unverified, and `fetch` because the body
+    # comes from it. Reading a step's output is depending on it, and the compiler refuses to
+    # let the two claims disagree — it caught this exact omission when the list was `[check]`.
+    depends_on: [check, fetch]
+    timeout_secs: 150
+    input_from:
+      # The formatted body the collector produced. Formatting is the collector's job because
+      # it is the only step that knows what an event looks like.
+      message: steps.fetch.output.digest_text
+    input:
+      title: 屏東近期活動
+      priority: low
+      tags: [pingtung, digest]
+      task_result: success
+
+budget:
+  max_steps: 8
+  # No model anywhere in this workflow. A planning step or an agent step would fail to compile
+  # against this, which is the intent.
+  max_llm_calls: 0

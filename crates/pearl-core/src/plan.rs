@@ -130,6 +130,21 @@ pub struct TaskPlan {
     /// Task-level timeout, overriding the capability's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    /// What the task hands its capability on `PEARL_INPUT`.
+    ///
+    /// This is what keeps a capability general. A knowledge scanner should not know which
+    /// tree it scans, a fetcher should not carry its own source list, and a verifier should
+    /// not be rewritten per caller — the task says, and the capability obeys. Without it the
+    /// only way to configure a capability is to hardcode the configuration inside it, which
+    /// turns one reusable capability into one capability per use.
+    ///
+    /// `schemas/task-spec-v1.json` has declared this field since v1; the parser dropped it,
+    /// so every task spec that set it was silently ignored.
+    ///
+    /// The worker merges it *under* the task's own identity, so a payload cannot claim to be
+    /// a different task (the same rule the workflow executor applies to step identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 impl TaskPlan {
@@ -150,7 +165,27 @@ impl TaskPlan {
 
     /// Whether the plan carries nothing at all, so it need not be persisted.
     pub fn is_empty(&self) -> bool {
-        self.capability.is_none() && self.assurance.is_empty() && self.timeout_seconds.is_none()
+        self.capability.is_none()
+            && self.assurance.is_empty()
+            && self.timeout_seconds.is_none()
+            && self.payload.is_none()
+    }
+
+    /// The declared payload's fields, or empty when none was declared.
+    ///
+    /// A payload that is not a JSON object is returned as one field named `input`, matching
+    /// what the workflow executor does with a non-object plan payload: a scalar is still
+    /// something the capability was given, and dropping it would be worse than naming it.
+    pub fn payload_fields(&self) -> serde_json::Map<String, serde_json::Value> {
+        match &self.payload {
+            Some(serde_json::Value::Object(map)) => map.clone(),
+            Some(serde_json::Value::Null) | None => serde_json::Map::new(),
+            Some(other) => {
+                let mut map = serde_json::Map::new();
+                map.insert("input".to_string(), other.clone());
+                map
+            }
+        }
     }
 }
 
@@ -213,6 +248,7 @@ mod tests {
                 },
             ],
             timeout_seconds: Some(30),
+            payload: Some(serde_json::json!({ "context_dir": "context" })),
         };
         let json = serde_json::to_string(&plan).unwrap();
         assert_eq!(serde_json::from_str::<TaskPlan>(&json).unwrap(), plan);

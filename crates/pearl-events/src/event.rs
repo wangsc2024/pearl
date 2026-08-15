@@ -401,6 +401,7 @@ mod tests {
                     capability: Some("script.task-score".into()),
                     assurance: vec![pearl_core::AssuranceStep::script("verifier.task-result")],
                     timeout_seconds: Some(30),
+                    ..TaskPlan::empty()
                 },
             },
             PearlEvent::TaskStateChanged {

@@ -331,3 +331,231 @@ print(json.dumps({"received": data}))
     assert_eq!(output["received"]["task_id"], "test-001");
     assert_eq!(output["received"]["score"], 95);
 }
+
+// ---------------------------------------------------------------- effect.notify
+//
+// `notify.py` publishes to an AgentFlow-Notify hub. These cases deliberately never reach
+// one: every path below is decidable from the input and the environment alone, which is
+// the property that lets an unconfigured or malformed notification cost nothing.
+//
+// The one thing not tested here is a successful publish, because that needs a running hub
+// and would either be a network-dependent test or a mock asserting that our own mock was
+// called. What a hub confirms -- that the topic, priority and tags arrive as sent -- was
+// verified by hand against a local `agentflow-notify` instance and recorded in ADR-0006.
+
+/// Runs `notify.py` with the given payload and environment, returning the result.
+fn run_notify(payload: serde_json::Value, env: &[(&str, &str)]) -> pearl_runtime::RuntimeResult {
+    let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
+    let script_path = workspace_root().join("capabilities/scripts/notify.py");
+    assert!(
+        script_path.exists(),
+        "notify.py not found at {script_path:?}"
+    );
+
+    let spec = ScriptSpec {
+        runtime: pearl_governance::manifest::Runtime::Python,
+        entrypoint: script_path,
+        args: vec![],
+        env: env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        cwd: None,
+        timeout: TimeDelta::try_seconds(30).unwrap(),
+        input_payload: Some(payload),
+    };
+    adapter.execute(&spec, &pearl_core::SystemClock).unwrap()
+}
+
+fn a_notification() -> serde_json::Value {
+    serde_json::json!({
+        "title": "subject",
+        "message": "body",
+        "idempotency_key": "notify:PEARL_kiro:selftest:2026-08-15",
+    })
+}
+
+/// An environment pointing at nothing, with the credentials explicitly cleared.
+///
+/// Port 9 is discard, so no test here can reach a hub even if the developer happens to have
+/// one running locally — an earlier version of these tests passed for that reason, which
+/// made them assertions about the machine rather than about the script. Clearing the token
+/// variables matters for the same reason: `env` here is merged onto the parent process's,
+/// so an ambient `AGENTFLOW_NOTIFY_TOKEN` would otherwise decide the outcome.
+///
+/// The consequence worth keeping in mind: a validation bug now shows up as exit 1
+/// ("unreachable") instead of exit 0, which is still distinguishable from the expected 2.
+fn unreachable_hub() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("AGENTFLOW_NOTIFY_URL", "http://127.0.0.1:9"),
+        ("AGENTFLOW_NOTIFY_ALLOW_ANON", "1"),
+        ("AGENTFLOW_NOTIFY_TOKEN", ""),
+        ("AGENTFLOW_NOTIFY_TIMEOUT_SECONDS", "5"),
+    ]
+}
+
+/// Exit 2 is "could not even try", and it must be distinguishable from exit 1, "tried and
+/// failed". Article 2's three-valued reasoning applied to a side effect: a configuration
+/// gap is not a delivery failure, and retrying it would change nothing.
+#[test]
+fn notify_refuses_to_run_without_a_hub_configured() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    let result = run_notify(
+        a_notification(),
+        &[("AGENTFLOW_NOTIFY_URL", ""), ("AGENTFLOW_NOTIFY_TOKEN", "")],
+    );
+
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 2 });
+    let output = result.structured_output.as_ref().expect("machine-readable");
+    assert_eq!(output["accepted"], false);
+    assert!(
+        output["error"]
+            .as_str()
+            .unwrap()
+            .contains("AGENTFLOW_NOTIFY_URL"),
+        "the error must name the variable to set: {output}"
+    );
+}
+
+#[test]
+fn notify_refuses_to_publish_without_a_token_unless_anonymous_is_explicit() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    let result = run_notify(
+        a_notification(),
+        &[
+            ("AGENTFLOW_NOTIFY_URL", "http://127.0.0.1:9"),
+            ("AGENTFLOW_NOTIFY_TOKEN", ""),
+            ("AGENTFLOW_NOTIFY_ALLOW_ANON", ""),
+        ],
+    );
+
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 2 });
+    let error = result.structured_output.as_ref().unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("AGENTFLOW_NOTIFY_TOKEN"), "got {error}");
+    // And it says how to opt out, because a local hub legitimately runs without auth.
+    assert!(error.contains("ALLOW_ANON"), "got {error}");
+}
+
+/// The hub's `Topic` type accepts 1-64 characters of `A-Za-z0-9_-`. Checking it here means
+/// a bad topic costs no network round trip and the message names the actual rule rather
+/// than returning the hub's 400.
+#[test]
+fn notify_rejects_a_topic_the_hub_would_refuse() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    for bad in ["has space", "a/b", &"x".repeat(65)] {
+        let mut payload = a_notification();
+        payload["topic"] = bad.into();
+        let result = run_notify(payload, &unreachable_hub());
+        assert_eq!(
+            result.exit_status,
+            RuntimeExitStatus::Exited { code: 2 },
+            "topic {bad:?} should have been refused"
+        );
+    }
+}
+
+/// An absent topic uses the default; a topic that is present and empty is a caller bug.
+/// Treating the two the same would publish to `PEARL_kiro` on behalf of a task that had
+/// tried to name something else and got it wrong.
+#[test]
+fn notify_distinguishes_an_absent_topic_from_an_empty_one() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    let mut payload = a_notification();
+    payload["topic"] = "".into();
+    let result = run_notify(payload, &unreachable_hub());
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 2 });
+    assert!(
+        result.structured_output.as_ref().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("omit it"),
+        "the error should say what to do instead"
+    );
+
+    // Absent, by contrast, gets as far as the network — which is the observable difference.
+    let result = run_notify(a_notification(), &unreachable_hub());
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 1 });
+}
+
+/// Priorities are named on the PEARL side and numeric on the hub's. A task spec should not
+/// have to encode another system's numbering, so passing the number is an error that says
+/// what to write instead.
+#[test]
+fn notify_takes_named_priorities_not_the_hubs_numbers() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    let mut payload = a_notification();
+    payload["priority"] = 4.into();
+    let result = run_notify(payload, &unreachable_hub());
+
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 2 });
+    let error = result.structured_output.as_ref().unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.contains("urgent"),
+        "the names should be listed: {error}"
+    );
+}
+
+/// Every field the ledger needs is required. A notification with no idempotency key could
+/// not be deduplicated, and Article 5 does not allow a side effect that cannot be.
+#[test]
+fn notify_requires_a_title_a_message_and_an_idempotency_key() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    for missing in ["title", "message", "idempotency_key"] {
+        let mut payload = a_notification();
+        payload.as_object_mut().unwrap().remove(missing);
+        let result = run_notify(payload, &unreachable_hub());
+        assert_eq!(
+            result.exit_status,
+            RuntimeExitStatus::Exited { code: 2 },
+            "a notification with no {missing} should be refused"
+        );
+        let error = result.structured_output.as_ref().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(missing), "the error should name it: {error}");
+    }
+}
+
+/// An unreachable hub is exit 1, not exit 2: the notification was well formed and the
+/// attempt was real, so a retry is worth making.
+#[test]
+fn notify_reports_an_unreachable_hub_as_a_failed_attempt() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    let result = run_notify(a_notification(), &unreachable_hub());
+
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 1 });
+    let output = result.structured_output.as_ref().unwrap();
+    assert_eq!(output["accepted"], false);
+    assert!(
+        output["error"].as_str().unwrap().contains("unreachable"),
+        "got {output}"
+    );
+}

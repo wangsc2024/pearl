@@ -1,0 +1,73 @@
+# The two reconciliation automations, decomposed.
+#
+# `output_watchdog` exists because of a real incident: a weak model returned exit 0 having done
+# nothing, a fallback wrote a plausible-looking result, and a "notification sent" flag went
+# true without a notification. Three layers of alerting were bypassed and the operator got
+# silence all day. The watchdog was the answer -- reconcile, at day's end, what should have
+# been pushed against what actually was.
+#
+# In DDP it did that by scraping `logs/ntfy/`. That is the part worth changing rather than
+# porting. PEARL records every side effect in `effects`, keyed by idempotency key and stamped
+# with when it committed, and every state change in the ledger. So the question the watchdog
+# asks -- "was this sent?" -- is a query against the record that the sending itself wrote,
+# not an inference from a file the sender happened to leave behind. A log can be missing
+# because nothing ran or because logging broke; the ledger cannot be missing an effect that
+# committed, because committing *is* the write (ADR-0001).
+#
+# Both capabilities read the ledger and report. Neither pushes: the alert is `effect.notify`,
+# wired by the workflow, so a watchdog that finds a missed notification cannot itself miss one
+# silently -- its own alert is an effect with a key, and the next day's run reconciles that too.
+
+---
+id: script.output-reconcile
+version: 1
+type: script
+kind: diagnostic
+description: |
+  Reconciles the notifications a schedule should have produced today against the effects the
+  ledger actually recorded, and reports what is missing. NOT IMPLEMENTED -- no entrypoint yet.
+  Porting note: DDP's tools/output_watchdog.py scraped logs/ntfy/ and carried a per-task
+  diagnosis (last successful push, continuity record, morning activity before the deadline).
+  The equivalent here reads `schedules`, `effects` and the ledger, which is a different query
+  against a better source rather than the same query against a worse one.
+execution:
+  kind: script
+  runtime: python
+quality:
+  # A query over the ledger at a point in time. The same database and the same clock give the
+  # same answer; the clock moves, which is the input changing rather than the function.
+  deterministic: true
+risk:
+  # Reads. The alert it may warrant is `effect.notify`, declared separately.
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 60
+retry:
+  max_attempts: 2
+
+---
+id: script.notification-review
+version: 1
+type: script
+kind: diagnostic
+description: |
+  Reviews recent notification history for volume, duplication and silence, and proposes what
+  to change. NOT IMPLEMENTED -- no entrypoint yet. Porting note: DDP's
+  tools/ntfy_review_pipeline.py also appended findings to a backlog; that half becomes a
+  separate effect capability rather than a hidden write, because a review that quietly files
+  work is a review whose output nobody can check.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 120
+retry:
+  max_attempts: 2

@@ -17,7 +17,7 @@ use crate::replan::{self, DynamicPlanning, ReplanRequest};
 /// when the last line parsed as JSON. Collapsing them would make a step that printed the word
 /// `null` indistinguishable from one that printed nothing, and would leave a downstream field
 /// reference no way to say "that step did not emit an object".
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepOutput {
     /// What the step printed.
     pub text: String,
@@ -101,7 +101,7 @@ fn first_line(text: &str) -> String {
 pub type StepOutputs = BTreeMap<String, StepOutput>;
 
 /// The outcome of executing a single step.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepOutcome {
     /// Step completed successfully.
     Success {
@@ -148,7 +148,7 @@ impl StepOutcome {
 }
 
 /// Record of a completed step execution.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepRecord {
     /// The step id.
     pub step_id: String,

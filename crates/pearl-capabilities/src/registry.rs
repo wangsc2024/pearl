@@ -26,6 +26,19 @@ pub struct RegisteredCapability {
 /// Errors that can occur during registry operations.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
+    /// The same capability id was defined in two directories.
+    ///
+    /// Not resolved by precedence: an id names one capability, and which of two definitions
+    /// wins should never depend on the order directories were passed in.
+    #[error(
+        "capability '{id}' is defined in both {first} and {second}; an id must name one capability"
+    )]
+    DuplicateId {
+        id: String,
+        first: std::path::PathBuf,
+        second: std::path::PathBuf,
+    },
+
     /// Failed to read a manifest file from disk.
     #[error("failed to read manifest at {path}: {detail}")]
     Io { path: PathBuf, detail: String },
@@ -96,6 +109,41 @@ impl CapabilityRegistry {
     pub fn load_directory(path: &Path) -> Result<Self, RegistryError> {
         let mut registry = Self::new();
         registry.load_directory_recursive(path)?;
+        Ok(registry)
+    }
+
+    /// Loads several directories into one registry.
+    ///
+    /// An application's capabilities and the framework's are legitimately separate trees:
+    /// `applications/ddp/capabilities` holds what that application can do, `capabilities/`
+    /// holds the verifiers and effects every application shares. A worker that could load
+    /// only one of them forced a choice between duplicating the shared capabilities into
+    /// every application or flattening the applications into one directory.
+    ///
+    /// A capability id defined in two directories is an error rather than a precedence rule.
+    /// Silently preferring one would make behaviour depend on argument order, and the whole
+    /// point of an id is that it names one thing (Article 10).
+    pub fn load_directories<P: AsRef<Path>>(paths: &[P]) -> Result<Self, RegistryError> {
+        let mut registry = Self::new();
+        let mut origin: std::collections::HashMap<String, std::path::PathBuf> =
+            std::collections::HashMap::new();
+
+        for path in paths {
+            let path = path.as_ref();
+            let before = registry.capabilities.len();
+            registry.load_directory_recursive(path)?;
+            for capability in &registry.capabilities[before..] {
+                let id = capability.manifest.id.clone();
+                if let Some(first) = origin.get(&id) {
+                    return Err(RegistryError::DuplicateId {
+                        id,
+                        first: first.clone(),
+                        second: path.to_path_buf(),
+                    });
+                }
+                origin.insert(id, path.to_path_buf());
+            }
+        }
         Ok(registry)
     }
 

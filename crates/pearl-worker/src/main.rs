@@ -43,9 +43,9 @@ struct Cli {
     #[arg(long)]
     worker_id: Option<String>,
 
-    /// Directory of capability manifests.
+    /// Directory of capability manifests. Repeatable: pass it once per tree.
     #[arg(long, default_value = "capabilities")]
-    capabilities: PathBuf,
+    capabilities: Vec<PathBuf>,
 
     /// Directory of JSON Schemas.
     #[arg(long, default_value = "schemas")]
@@ -125,7 +125,7 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
     let config = WorkerConfig {
         worker_id: WorkerId::new(cli.worker_id.clone().unwrap_or_else(default_worker_id)),
         poll_interval: Duration::from_millis(cli.poll_ms),
-        capabilities_dir: cli.capabilities.clone(),
+        capability_dirs: cli.capabilities.clone(),
         schema_dir: cli.schemas.clone(),
         permissions_path: Some(cli.permissions.clone()),
         working_dir: cli.working_dir.clone(),

@@ -46,7 +46,7 @@ fn shipped_config(dir: &TempDir) -> WorkerConfig {
     WorkerConfig {
         worker_id: WorkerId::new("worker:test"),
         poll_interval: std::time::Duration::from_millis(1),
-        capabilities_dir: workspace_root().join("capabilities"),
+        capability_dirs: vec![workspace_root().join("capabilities")],
         schema_dir: workspace_root().join("schemas"),
         permissions_path: Some(allow_all_permissions(dir)),
         working_dir: Some(dir.path().to_path_buf()),
@@ -63,7 +63,7 @@ fn shipped_config(dir: &TempDir) -> WorkerConfig {
 /// A worker configured against fixture capabilities written into `dir`.
 fn fixture_config(dir: &TempDir) -> WorkerConfig {
     WorkerConfig {
-        capabilities_dir: dir.path().join("capabilities"),
+        capability_dirs: vec![dir.path().join("capabilities")],
         ..shipped_config(dir)
     }
 }
@@ -169,6 +169,7 @@ fn the_acceptance_scenario_reaches_verified_success() {
                 ..AssuranceStep::script("verifier.task-result")
             }],
             timeout_seconds: Some(30),
+            ..TaskPlan::empty()
         },
     );
 

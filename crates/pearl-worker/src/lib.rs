@@ -80,8 +80,12 @@ pub struct WorkerConfig {
     pub worker_id: WorkerId,
     /// How long to wait between polls when the queue is empty.
     pub poll_interval: Duration,
-    /// Directory of capability manifests.
-    pub capabilities_dir: PathBuf,
+    /// Directories of capability manifests, loaded into one registry.
+    ///
+    /// A list because an application's capabilities and the framework's shared verifiers and
+    /// effects are separate trees. One directory forced either duplicating the shared ones
+    /// into every application or flattening every application into one directory.
+    pub capability_dirs: Vec<PathBuf>,
     /// Directory of JSON Schemas, for schema assurance steps.
     pub schema_dir: PathBuf,
     /// Capability permission rules. Absent means "permit nothing".
@@ -99,7 +103,7 @@ impl Default for WorkerConfig {
         Self {
             worker_id: WorkerId::new("worker:local"),
             poll_interval: Duration::from_millis(500),
-            capabilities_dir: PathBuf::from("capabilities"),
+            capability_dirs: vec![PathBuf::from("capabilities")],
             schema_dir: PathBuf::from("schemas"),
             permissions_path: Some(PathBuf::from("policies/permissions.yaml")),
             working_dir: None,
@@ -197,9 +201,13 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
     /// first task, when a lease is already held.
     pub fn new(config: WorkerConfig, clock: C) -> Result<Self, WorkerError> {
         let registry =
-            CapabilityRegistry::load_directory(&config.capabilities_dir).map_err(|e| {
+            CapabilityRegistry::load_directories(&config.capability_dirs).map_err(|e| {
                 WorkerError::Registry {
-                    path: config.capabilities_dir.clone(),
+                    path: config
+                        .capability_dirs
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| PathBuf::from("<none>")),
                     source: e,
                 }
             })?;
@@ -671,7 +679,12 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
                 .ok_or_else(|| Refusal::NoCapability {
                     detail: format!(
                         "task names capability '{named}', which is not in {}",
-                        self.config.capabilities_dir.display()
+                        self.config
+                            .capability_dirs
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                 });
         }
@@ -1053,15 +1066,29 @@ fn lease_config_for(timeout: TimeDelta) -> LeaseConfig {
 }
 
 /// The payload handed to a capability on `PEARL_INPUT`.
+///
+/// The task's declared payload first, then its identity. The order is the point: identity is
+/// a fact about this invocation rather than a parameter, so a spec cannot dress a task up as
+/// another one by declaring `task_id`. The workflow executor applies the same rule to steps,
+/// and it is the same reason.
 fn task_payload(task: &TaskRecord) -> serde_json::Value {
-    serde_json::json!({
-        "task_id": task.task_id.as_str(),
-        "task_type": task.task_type,
-        "trace_id": task.trace_id.to_string(),
-        "attempt": task.attempt_count + 1,
-        "precision_class": task.precision_class.map(|p| p.as_str()),
-        "quality": task.quality,
-    })
+    let mut map = task.plan.payload_fields();
+    map.insert("task_id".into(), task.task_id.as_str().into());
+    map.insert("task_type".into(), task.task_type.clone().into());
+    map.insert("trace_id".into(), task.trace_id.to_string().into());
+    map.insert("attempt".into(), (task.attempt_count + 1).into());
+    map.insert(
+        "precision_class".into(),
+        match task.precision_class {
+            Some(class) => class.as_str().into(),
+            None => serde_json::Value::Null,
+        },
+    );
+    map.insert(
+        "quality".into(),
+        serde_json::to_value(task.quality).unwrap_or(serde_json::Value::Null),
+    );
+    serde_json::Value::Object(map)
 }
 
 /// What verification is performed against.

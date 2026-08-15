@@ -1,0 +1,83 @@
+# zen_koan -- select, compose, assemble, verify, push.
+#
+# The workflow is where the three capabilities become one automation again, and where the data
+# between them is declared instead of passed through a shared results file. In DDP the steps
+# communicated by writing and re-reading `results/todoist-auto-zen_koan.json`, which meant a
+# step could not tell whether it was reading this run's output or last run's.
+#
+# The composer is the only step that reasons. Everything around it is mechanical, and the
+# arrangement is deliberate: the model is given a chosen topic rather than choosing one, and
+# its prose is shaped by a script rather than being trusted to emit the final structure. That
+# is Article 1 applied to a pipeline -- give the model the part that needs judgement and
+# nothing else.
+name: ddp.zen-koan
+description: Chooses a koan, has a local model write it up, shapes the result, then pushes it.
+
+steps:
+  - id: select
+    capability: script.zen-koan-select
+    step_type: run
+    timeout_secs: 15
+
+  - id: compose
+    capability: agent.zen-koan-compose
+    step_type: run
+    depends_on: [select]
+    timeout_secs: 360
+    input_from:
+      # The model is told which koan; it does not get to pick. Rotation is a rule, and rules
+      # belong in the deterministic step.
+      topic: steps.select.output.topic
+      source: steps.select.output.source
+
+  - id: assemble
+    capability: script.zen-koan-assemble
+    step_type: run
+    depends_on: [compose, select]
+    timeout_secs: 15
+    input_from:
+      koan_markdown: steps.compose.output.markdown
+      topic: steps.select.output.topic
+      source: steps.select.output.source
+    # What gets pushed comes from here, so this is the load-bearing result.
+    exactness_required: true
+
+  - id: check
+    capability: verifier.task-result
+    step_type: verify
+    depends_on: [assemble]
+    timeout_secs: 30
+    input_from:
+      result: steps.assemble.output
+    input:
+      require_keys: [topic, koan_markdown]
+      types:
+        koan_markdown: string
+      # The failure this exists for: DDP saw a small model return a single line, which is a
+      # successful generation and not a koan. A length floor is the mechanical form of "the
+      # model actually wrote something".
+      non_empty: [topic, koan_markdown]
+
+  - id: push
+    capability: effect.notify
+    step_type: effect
+    # Everything it reads, plus the check that licenses sending at all. `depends_on` stays a
+    # complete statement of what this step needs, which is why the compiler insists on it.
+    depends_on: [check, assemble, select]
+    timeout_secs: 150
+    input_from:
+      message: steps.assemble.output.koan_markdown
+      # The topic is part of the subject line, so it travels as data rather than being
+      # duplicated as a literal here.
+      subject: steps.select.output.topic
+    input:
+      title: 今日公案
+      priority: low
+      tags: [zen, koan]
+      task_result: success
+
+budget:
+  max_steps: 8
+  # One model call: the composer. A second would mean something started reasoning that should
+  # not be, and the compiler would say so.
+  max_llm_calls: 1

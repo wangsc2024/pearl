@@ -1,0 +1,100 @@
+# zen_koan, decomposed.
+#
+# In DDP this was one `ps1_native` auto-task, which made it look mechanical. It is not: the
+# middle step is a local Gemma model writing prose. What made it "mechanical" there was that a
+# local model spends no API tokens -- a billing property, not a determinism one.
+#
+# Article 1 draws the line where the reasoning actually is, so the one task becomes three
+# capabilities:
+#
+#   script.zen-koan-select    pick the next koan          deterministic, no model
+#   agent.zen-koan-compose    write it up                 a model, because prose is not a formula
+#   script.zen-koan-assemble  shape the result            deterministic, no model
+#
+# Three registry entries rather than one is the point. Each can be permitted, routed, retried,
+# timed out and verified on its own terms: the selector is safe to retry and the composer is
+# not free to; the selector is reproducible and the composer cannot be. A single capability
+# would have had to declare the weakest of each, so the whole task would have inherited
+# `deterministic: false` and the selector's determinism would have become unenforceable.
+#
+# `capabilities/workflows/zen-koan.yaml` is what puts them back together, and the data flow
+# between them is declared there rather than implied by a shared results file.
+
+---
+id: script.zen-koan-select
+version: 1
+type: script
+kind: transformer
+description: |
+  Picks the next koan from a candidate pool, avoiding recent repeats. NOT IMPLEMENTED -- no
+  entrypoint yet; the rotation rule still has to be read out of DDP's tools/zen_koan_select.py
+  and config/zen-koan-candidates.md before it can be claimed to be ported.
+execution:
+  kind: script
+  runtime: python
+quality:
+  # Selection from a fixed pool by a fixed rotation rule. Whether it stays deterministic
+  # depends on how the rotation state is threaded; that is settled when it is implemented.
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 15
+retry:
+  max_attempts: 2
+
+---
+id: agent.zen-koan-compose
+version: 1
+type: agent
+kind: transformer
+description: |
+  Writes up a chosen koan as structured Markdown. NOT IMPLEMENTED -- no entrypoint yet; the
+  prompt has to be ported from DDP's prompts/fragments/zen_koan_format_loose.md.
+execution:
+  kind: agent
+  # A local llama.cpp server, which is what made this task free to run in DDP. The runtime is
+  # named so a permission rule can allow the local model without allowing paid endpoints.
+  runtime: llama_cpp
+quality:
+  # Article 1: a model writing prose cannot promise the same output twice, and declaring
+  # otherwise would let the mechanical determinism check pass for something that reasons.
+  deterministic: false
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+# DDP allowed 300s for generation on a 26B local model. The deadline sits above that so
+# Article 9's cancellation fires on a stuck model rather than a slow one.
+timeout_seconds: 360
+retry:
+  # DDP fell back from the 26B model to the 12B one when the first produced too little. That
+  # is two attempts, and it is worth keeping: the failure it was added for was a small model
+  # emitting a single line.
+  max_attempts: 2
+
+---
+id: script.zen-koan-assemble
+version: 1
+type: script
+kind: transformer
+description: |
+  Shapes a composed koan into the result document, rejecting output too short to be one.
+  NOT IMPLEMENTED -- no entrypoint yet; ported from DDP's tools/zen_koan_assemble.py.
+execution:
+  kind: script
+  runtime: python
+quality:
+  # String assembly and a length check. Nothing to decide.
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 15
+retry:
+  max_attempts: 2

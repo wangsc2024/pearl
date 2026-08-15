@@ -38,7 +38,10 @@ behaviour had drifted apart.
 
 - §41 already said only a *committed* checkpoint licenses the next step, and `checkpoints` already
   had an unused `payload` column. The durability half of data flow was designed and unwired.
-- `PlanStep` was `Eq`, and JSON values are not. Any literal-input field forces `PartialEq` only.
+- `AssuranceStep` already carries a `serde_json::Value` and derives `Eq`, so adding JSON fields
+  to `PlanStep` costs nothing in trait bounds. (An earlier draft of this ADR claimed `Value` is
+  only `PartialEq` and dropped `Eq` from four types on that basis. The claim was wrong —
+  `serde_json::Value` implements `Eq` — and the derives were restored.)
 - `CompilerConfig` already carried `known_capabilities` and `verified_steps`; the §30 gate a
   dynamic sub-plan needs is the gate that already existed, not a new one.
 - Databases exist in three shapes in the wild: v1 (before either column), interim (columns
@@ -105,8 +108,6 @@ refused rather than opened.
 
 ### Negative / accepted cost
 
-- `PlanStep`, `ExecutionPlan`, `StepOutcome` and `StepRecord` lose `Eq`. Nothing needed it; the
-  cost is that a future `HashSet<PlanStep>` is not available without a wrapper.
 - `StepExecutor` is a breaking signature change for any external caller.
 - Checkpoint payloads now hold whole step outputs, so the projection grows with output size. It is
   a cache and can be rebuilt, but it is no longer negligible.
