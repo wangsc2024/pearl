@@ -51,19 +51,28 @@ version: 1
 type: script
 kind: collector
 description: |
-  Fetches upcoming Pingtung county events from the public calendar. NOT IMPLEMENTED -- no
-  entrypoint yet; ported from DDP's tools/fetch_pthg_calendar.py, which took a day window and
-  a result limit.
+  Fetches Pingtung county's public event calendar and formats the upcoming ones as a digest.
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: ../scripts/fetch_pingtung_events.py
 quality:
+  # A live calendar: the same request tomorrow returns different events, and "upcoming" is
+  # measured against the clock. Article 1's check reads determinism as "same input, same
+  # output", which no feed can promise -- so this is false despite no model being involved.
   deterministic: false
 risk:
+  # Reads the feed and reports. The push is `effect.notify`, declared separately, which is
+  # what leaves this one free to retry.
   side_effect: false
 platform:
   windows: true
   linux: true
+# The county's site closes connections intermittently, so the script retries three times with
+# a two-second backoff of its own. The deadline has to cover that plus a 1.7 MB parse.
 timeout_seconds: 120
 retry:
+  # Task-level retry on top of the script's own, for the case where all three attempts fall
+  # inside one bad minute. Safe because nothing has been sent at this point.
   max_attempts: 2

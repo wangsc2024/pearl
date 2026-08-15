@@ -214,6 +214,26 @@ impl<S: ProcessSupervisor, C: Clock> RuntimeStepExecutor<S, C> {
             "precision_class".to_string(),
             step.precision_class.as_str().into(),
         );
+
+        // A key for any step that performs an effect (Article 5). Derived from the task and the
+        // step rather than from a clock, which is what makes it *stable*: a retried step, or a
+        // step reached again by `--resume`, presents the same key, and a workflow task id
+        // already carries a timestamp so separate occurrences differ.
+        //
+        // Supplied here because a side-effecting capability cannot invent its own — it has no
+        // way to know which occurrence it belongs to. Identity-derived, so it is applied with
+        // the rest of the identity and a payload cannot override it.
+        //
+        // The honest limit: this gives the effect a key, not deduplication. `workflow run` does
+        // not call `StateStore::request_effect`, so nothing consults the `effects` table before
+        // the step runs; the key is what would make that check possible and what lets a
+        // receiving side recognise a repeat. Ledger-backed dedup for workflow effects is not
+        // implemented (the worker path has it).
+        if let Some(task_id) = map.get("task_id").and_then(|v| v.as_str()) {
+            let key = format!("{task_id}/{}", step.id);
+            map.insert("idempotency_key".to_string(), key.into());
+        }
+
         Ok(serde_json::Value::Object(map))
     }
 }
@@ -480,6 +500,50 @@ mod tests {
             }
             other => panic!("expected failure, got {other:?}"),
         }
+    }
+
+    /// Article 5: an effect step needs a key, and it cannot invent one for itself. Derived
+    /// from the task and the step so that a retry presents the same key.
+    #[test]
+    fn an_effect_step_is_given_a_stable_idempotency_key() {
+        let (_dir, registry) = registry_with("script.x", "print('{}')\n");
+        let runner = RuntimeStepExecutor::new(registry, PlatformSupervisor::default(), SystemClock)
+            .with_payload(serde_json::json!({ "task_id": "digest-20260816t000000z" }));
+        let s = step("push", "script.x", Duration::from_secs(1));
+
+        let first = runner.step_payload(&s, &StepOutputs::new()).unwrap();
+        let again = runner.step_payload(&s, &StepOutputs::new()).unwrap();
+        assert_eq!(first["idempotency_key"], "digest-20260816t000000z/push");
+        assert_eq!(
+            first["idempotency_key"], again["idempotency_key"],
+            "a retried step must present the same key or the effect could double"
+        );
+
+        // A different step in the same task is a different effect.
+        let other = runner
+            .step_payload(
+                &step("notify-again", "script.x", Duration::from_secs(1)),
+                &StepOutputs::new(),
+            )
+            .unwrap();
+        assert_ne!(first["idempotency_key"], other["idempotency_key"]);
+    }
+
+    #[test]
+    fn a_payload_cannot_supply_its_own_idempotency_key() {
+        let (_dir, registry) = registry_with("script.x", "print('{}')\n");
+        let runner = RuntimeStepExecutor::new(registry, PlatformSupervisor::default(), SystemClock)
+            .with_payload(serde_json::json!({ "task_id": "t1" }));
+        let s = step("push", "script.x", Duration::from_secs(1)).with_input(
+            "idempotency_key",
+            serde_json::json!("notify:whatever-i-like"),
+        );
+
+        let payload = runner.step_payload(&s, &StepOutputs::new()).unwrap();
+        assert_eq!(
+            payload["idempotency_key"], "t1/push",
+            "the key is identity, not a parameter"
+        );
     }
 
     #[test]
