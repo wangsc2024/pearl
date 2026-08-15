@@ -1293,7 +1293,19 @@ fn workflow(cli: &Cli, cmd: &WorkflowCommand) -> Result<u8, Box<dyn std::error::
                     println!("resumed      from a committed checkpoint");
                 }
                 for record in &result.records {
-                    println!("  {:<24} {:?}", record.step_id, record.outcome);
+                    // A summary, not the whole outcome: a step's structured output can be
+                    // kilobytes, and `--json` is there for whoever wants all of it.
+                    let status = match &record.outcome {
+                        pearl_executor::StepOutcome::Success { .. } => "ok",
+                        pearl_executor::StepOutcome::Failed { .. } => "failed",
+                        pearl_executor::StepOutcome::Skipped { .. } => "skipped",
+                    };
+                    println!(
+                        "  {:<24} {:<8} {}",
+                        record.step_id,
+                        status,
+                        record.outcome.summary()
+                    );
                 }
                 println!(
                     "\n{} of {} step(s) succeeded",
@@ -1352,6 +1364,9 @@ fn compile(file: &Path, capabilities_path: &Path) -> Result<CompiledWorkflow, se
     let engine = pearl_workflow::WorkflowEngine::with_config(pearl_plan_compiler::CompilerConfig {
         known_capabilities: known,
         verified_steps: verified,
+        // A workflow file is compiled before anything runs, so no step has finished yet: every
+        // reference in it must resolve within the file.
+        completed_steps: Default::default(),
     });
 
     match engine.compile_workflow(&definition) {
@@ -1378,6 +1393,11 @@ fn compiled_hash(compiled: &pearl_plan_compiler::CompiledPlan) -> String {
 }
 
 /// Rebuilds an executor checkpoint from what was committed.
+///
+/// Restores the outputs as well as the step ids. §41 says a committed checkpoint licenses the
+/// next step; when that step reads its predecessor's output, the output is part of what was
+/// licensed. Restoring ids alone would resume in the right order and feed the work nothing,
+/// which is the failure mode a crash-resume is supposed to prevent.
 fn resume_from(
     store: &StateStore,
     task_id: &TaskId,
@@ -1388,6 +1408,16 @@ fn resume_from(
     }
     let mut checkpoint = Checkpoint::new();
     for record in committed {
+        // A payload that will not parse is treated as an absent output rather than a fatal
+        // error: the step still counts as done, and a successor that needed its output will
+        // say precisely that instead of the resume failing wholesale.
+        if let Some(output) = record
+            .payload
+            .as_deref()
+            .and_then(|p| serde_json::from_str::<pearl_executor::StepOutput>(p).ok())
+        {
+            checkpoint.restore_output(record.label.clone(), output);
+        }
         checkpoint.completed_steps.insert(record.label);
     }
     Ok(Some(checkpoint))
@@ -1419,7 +1449,9 @@ impl CheckpointSink for StoreSink<'_> {
                     self.run_id,
                     self.step_number,
                     &record.step_id,
-                    format!("{:?}", record.outcome),
+                    // One line for a human reading the projection. The full output lives in
+                    // the checkpoint payload, where resume can find it.
+                    record.outcome.summary(),
                     status,
                 )
                 .started(record.started_at)
@@ -1429,9 +1461,15 @@ impl CheckpointSink for StoreSink<'_> {
 
         // Only a successful step is a resume point. Committing a failed one would make resume
         // skip the step that needs redoing.
-        if matches!(record.outcome, pearl_executor::StepOutcome::Success { .. }) {
+        if let Some(output) = record.outcome.output() {
+            let payload = serde_json::to_string(&output).map_err(|e| e.to_string())?;
             self.store
-                .commit_checkpoint(&self.task_id, &record.step_id, None, record.completed_at)
+                .commit_checkpoint(
+                    &self.task_id,
+                    &record.step_id,
+                    Some(&payload),
+                    record.completed_at,
+                )
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -1443,6 +1481,10 @@ fn doctor(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
     let now = SystemClock.now();
 
     let ledger_events = store.ledger().count()?;
+    // Which schema a database is on is the first question when a query fails on a machine you
+    // cannot see, so doctor answers it before anything else.
+    let ledger_schema = store.ledger().schema_version()?;
+    let projection_schema = store.schema_version()?;
     let mut by_state = Vec::new();
     for state in [
         TaskState::Created,
@@ -1484,6 +1526,10 @@ fn doctor(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "database": cli.db.display().to_string(),
+                "schema": {
+                    "ledger": ledger_schema,
+                    "projections": projection_schema,
+                },
                 "ledger_events": ledger_events,
                 "tasks_by_state": by_state
                     .iter()
@@ -1496,6 +1542,7 @@ fn doctor(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
         );
     } else {
         println!("database       {}", cli.db.display());
+        println!("schema         ledger v{ledger_schema}, projections v{projection_schema}");
         println!("ledger events  {ledger_events}");
         println!();
         if by_state.is_empty() {

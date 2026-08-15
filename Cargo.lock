@@ -1185,6 +1185,7 @@ dependencies = [
  "pearl-core",
  "pearl-planner",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -1194,6 +1195,7 @@ version = "0.1.0"
 dependencies = [
  "pearl-core",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -1340,6 +1342,7 @@ dependencies = [
  "pearl-plan-compiler",
  "pearl-planner",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
 ]

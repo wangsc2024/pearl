@@ -38,6 +38,23 @@ pub enum CompileError {
     /// A step does not declare a timeout.
     #[error("step '{step}' is missing a timeout declaration")]
     MissingTimeout { step: String },
+
+    /// A step reads a step it cannot read.
+    ///
+    /// Data flow is a dependency, so it is checked with the same seriousness as one. A step
+    /// whose input comes from somewhere the ordering does not guarantee has run would receive
+    /// nothing, and "nothing" is indistinguishable from a legitimately empty result.
+    #[error("step '{step}' takes '{key}' from '{reference}', but {detail}")]
+    UnreadableInput {
+        step: String,
+        key: String,
+        reference: String,
+        detail: String,
+    },
+
+    /// A payload key is declared as both a literal and a reference.
+    #[error("step '{step}' declares '{key}' in both input and input_from; one of them would be silently discarded")]
+    ConflictingInput { step: String, key: String },
 }
 
 /// A set of known capabilities (by id) for validation.
@@ -53,6 +70,14 @@ pub struct CompilerConfig {
     pub known_capabilities: CapabilitySet,
     /// Steps that have verifiers attached (for exactness checks).
     pub verified_steps: VerifierSet,
+    /// Steps that already finished outside this plan, and whose output can therefore be read
+    /// without a dependency edge — §40.
+    ///
+    /// A dynamic sub-plan is compiled while the run that asked for it is in progress, so the
+    /// steps that produced its inputs are not in it. They still cannot be depended *on*: they
+    /// are already done, so ordering is not in question. Everything else about them is checked
+    /// exactly as usual.
+    pub completed_steps: HashSet<String>,
 }
 
 /// The Plan Compiler validates a plan and produces a `CompiledPlan` on success.
@@ -118,6 +143,13 @@ impl PlanCompiler {
             }
         }
 
+        // Data flow: every reference must name a step this one waits for, or one that has
+        // already finished.
+        errors.extend(check_input_wiring(
+            &plan.steps,
+            &self.config.completed_steps,
+        ));
+
         // Check budget.
         if plan.steps.len() > plan.budget.max_steps {
             errors.push(CompileError::BudgetExceeded {
@@ -157,6 +189,55 @@ impl PlanCompiler {
             }
         }
     }
+}
+
+/// Checks that every step reads only from steps it declared a dependency on.
+///
+/// The dependency must be *declared*, not merely reachable. Transitive reachability would
+/// order the steps correctly too, but it would leave `depends_on` an incomplete statement of
+/// what a step needs: a reader of the step could not tell where its input comes from without
+/// walking the whole graph. Requiring the edge costs one word and the compiler says which.
+fn check_input_wiring(steps: &[PlanStep], completed: &HashSet<String>) -> Vec<CompileError> {
+    let known: HashSet<&str> = steps.iter().map(|s| s.id.as_str()).collect();
+    let mut errors = Vec::new();
+
+    for step in steps {
+        let declared: HashSet<&str> = step.depends_on.iter().map(String::as_str).collect();
+        for (key, reference) in &step.input_from {
+            if step.input.contains_key(key) {
+                errors.push(CompileError::ConflictingInput {
+                    step: step.id.clone(),
+                    key: key.clone(),
+                });
+            }
+            let detail = if completed.contains(&reference.step) {
+                None
+            } else if reference.step == step.id {
+                Some("a step cannot read its own output".to_string())
+            } else if !known.contains(reference.step.as_str()) {
+                Some(format!(
+                    "there is no step '{}' in this plan",
+                    reference.step
+                ))
+            } else if !declared.contains(reference.step.as_str()) {
+                Some(format!(
+                    "'{}' is not among its dependencies; add it to depends_on",
+                    reference.step
+                ))
+            } else {
+                None
+            };
+            if let Some(detail) = detail {
+                errors.push(CompileError::UnreadableInput {
+                    step: step.id.clone(),
+                    key: key.clone(),
+                    reference: reference.to_string(),
+                    detail,
+                });
+            }
+        }
+    }
+    errors
 }
 
 /// Performs a topological sort on plan steps. Returns None if a cycle is detected.
@@ -268,25 +349,11 @@ mod tests {
     use std::time::Duration;
 
     fn step(id: &str, cap: &str, deps: &[&str], class: PrecisionClass) -> PlanStep {
-        PlanStep {
-            id: id.to_string(),
-            capability: cap.to_string(),
-            depends_on: deps.iter().map(|s| s.to_string()).collect(),
-            precision_class: class,
-            timeout: Duration::from_secs(30),
-            exactness_required: false,
-        }
+        PlanStep::new(id, cap, class, Duration::from_secs(30)).after(deps.to_vec())
     }
 
     fn step_no_timeout(id: &str, cap: &str, deps: &[&str], class: PrecisionClass) -> PlanStep {
-        PlanStep {
-            id: id.to_string(),
-            capability: cap.to_string(),
-            depends_on: deps.iter().map(|s| s.to_string()).collect(),
-            precision_class: class,
-            timeout: Duration::ZERO,
-            exactness_required: false,
-        }
+        PlanStep::new(id, cap, class, Duration::ZERO).after(deps.to_vec())
     }
 
     fn plan(steps: Vec<PlanStep>) -> ExecutionPlan {
@@ -313,11 +380,113 @@ mod tests {
             .collect()
     }
 
+    // ------------------------------------------------------- data flow wiring
+
+    use pearl_planner::StepRef;
+
+    #[test]
+    fn a_step_may_read_a_step_it_depends_on() {
+        let compiler = PlanCompiler::default();
+        let p = plan(vec![
+            step("a", "cap.a", &[], PrecisionClass::P0),
+            step("b", "cap.b", &["a"], PrecisionClass::P0)
+                .taking("items", StepRef::field("a", ["items"])),
+        ]);
+        let compiled = compiler.compile(&p).unwrap();
+        assert_eq!(compiled.execution_order[1].input_from.len(), 1);
+    }
+
+    #[test]
+    fn reading_a_step_that_is_not_a_dependency_does_not_compile() {
+        let compiler = PlanCompiler::default();
+        // `b` runs after `a` only by accident of ordering — nothing declares it must.
+        let p = plan(vec![
+            step("a", "cap.a", &[], PrecisionClass::P0),
+            step("b", "cap.b", &[], PrecisionClass::P0).taking("items", StepRef::whole("a")),
+        ]);
+        let errors = compiler.compile(&p).unwrap_err();
+        let problem = errors
+            .iter()
+            .find_map(|e| match e {
+                CompileError::UnreadableInput { detail, .. } => Some(detail.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected an unreadable-input error, got {errors:?}"));
+        assert!(problem.contains("depends_on"), "got {problem}");
+    }
+
+    #[test]
+    fn reading_a_step_that_does_not_exist_does_not_compile() {
+        let compiler = PlanCompiler::default();
+        let p =
+            plan(vec![step("a", "cap.a", &[], PrecisionClass::P0)
+                .taking("x", StepRef::whole("imaginary"))]);
+        let errors = compiler.compile(&p).unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                CompileError::UnreadableInput { detail, .. } if detail.contains("no step 'imaginary'")
+            )),
+            "got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_step_cannot_read_its_own_output() {
+        let compiler = PlanCompiler::default();
+        let p = plan(vec![
+            step("a", "cap.a", &[], PrecisionClass::P0).taking("x", StepRef::whole("a"))
+        ]);
+        let errors = compiler.compile(&p).unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                CompileError::UnreadableInput { detail, .. } if detail.contains("its own output")
+            )),
+            "got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_step_may_read_a_step_that_already_finished_elsewhere() {
+        // How a dynamic sub-plan reads the run that produced it: the step it names is not in
+        // this plan and cannot be, because it has already run.
+        let compiler = PlanCompiler::new(CompilerConfig {
+            completed_steps: ["earlier".to_string()].into_iter().collect(),
+            ..CompilerConfig::default()
+        });
+        let p = plan(vec![step("a", "cap.a", &[], PrecisionClass::P0)
+            .taking("seed", StepRef::field("earlier", ["items"]))]);
+        assert!(compiler.compile(&p).is_ok());
+
+        // And without that declaration it is still an error, so the exemption is opt-in.
+        assert!(PlanCompiler::default().compile(&p).is_err());
+    }
+
+    #[test]
+    fn a_key_declared_as_both_a_literal_and_a_reference_does_not_compile() {
+        let compiler = PlanCompiler::default();
+        let p = plan(vec![
+            step("a", "cap.a", &[], PrecisionClass::P0),
+            step("b", "cap.b", &["a"], PrecisionClass::P0)
+                .with_input("items", serde_json::json!([1, 2]))
+                .taking("items", StepRef::whole("a")),
+        ]);
+        let errors = compiler.compile(&p).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, CompileError::ConflictingInput { key, .. } if key == "items")),
+            "got {errors:?}"
+        );
+    }
+
     #[test]
     fn accepts_valid_linear_dag() {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = plan(vec![
             step("a", "cap.a", &[], PrecisionClass::P0),
@@ -336,6 +505,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = plan(vec![
             step("a", "cap.a", &[], PrecisionClass::P0),
@@ -355,6 +525,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = plan(vec![
             step("a", "cap.a", &["b"], PrecisionClass::P0),
@@ -371,6 +542,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = plan(vec![step("a", "cap.a", &["a"], PrecisionClass::P0)]);
         let errs = compiler.compile(&p).unwrap_err();
@@ -384,6 +556,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: HashSet::from(["cap.a".to_string()]),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = plan(vec![step("a", "cap.unknown", &[], PrecisionClass::P0)]);
         let errs = compiler.compile(&p).unwrap_err();
@@ -397,6 +570,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: HashSet::new(), // No verifiers
+            ..CompilerConfig::default()
         });
         // §30 keys the obligation on the step's own exactness demand, not on its precision
         // class: a mechanical step can be a best-effort probe, and demanding a verifier for
@@ -415,6 +589,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: HashSet::from(["a".to_string()]),
+            ..CompilerConfig::default()
         });
         let mut declared = step("a", "cap.a", &[], PrecisionClass::P0);
         declared.exactness_required = true;
@@ -440,6 +615,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: HashSet::new(), // No verifiers
+            ..CompilerConfig::default()
         });
         let p = plan(vec![step("a", "cap.a", &[], PrecisionClass::P3)]);
         let compiled = compiler.compile(&p).unwrap();
@@ -451,6 +627,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = ExecutionPlan {
             steps: vec![
@@ -473,6 +650,7 @@ mod tests {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: all_verified(),
+            ..CompilerConfig::default()
         });
         let p = plan(vec![step_no_timeout("a", "cap.a", &[], PrecisionClass::P0)]);
         let errs = compiler.compile(&p).unwrap_err();

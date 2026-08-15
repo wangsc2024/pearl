@@ -26,6 +26,8 @@
 
 pub mod event;
 pub mod ledger;
+pub mod migrations;
 
 pub use event::{EventEnvelope, PearlEvent, RunOutcome};
 pub use ledger::{append_in_tx, append_with, record, EventLedger, LedgerError};
+pub use migrations::{Applied, Migration, MigrationError};

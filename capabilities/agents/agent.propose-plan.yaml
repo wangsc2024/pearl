@@ -1,0 +1,46 @@
+# The planning half of SS 40's dynamic Planner-Executor form.
+#
+# Article 1 permits an agent here because choosing which steps to run, given a goal and a set
+# of available capabilities, is not a formula. Article 1 also bounds what that permission
+# means: SS 29 says a Planner may emit steps and may not run a shell, write a file, call an API
+# or send a notification. This capability cannot do any of those things — not because it is
+# asked nicely, but because its output goes to `PlanProposal::from_value`, which refuses to
+# read anything other than steps. A proposal carrying a `command` key does not parse.
+#
+# What runs the plan is the compiler, not this capability. Its steps are checked against the
+# registry, the verifier rule, the DAG, the timeouts and the caller's budget before anything
+# executes, exactly as a hand-written workflow's are.
+#
+# Requires the Cursor CLI on PATH (override with PEARL_CURSOR_BIN). With it absent the worker
+# refuses before spawning, so an unconfigured machine costs nothing and says why.
+id: agent.propose-plan
+version: 1
+type: agent
+kind: transformer
+description: Proposes an execution plan as steps, for a workflow's plan step to compile and run.
+execution:
+  kind: agent
+  runtime: cursor
+  entrypoint:
+    # A prompt template. Article 3's mirror: prompt content belongs in a reviewable file, not
+    # in a Rust string literal where it cannot be diffed as a prompt revision.
+    script: prompts/propose_plan.md
+quality:
+  # A plan chosen by a model is not reproducible. Declaring otherwise would let Article 1's
+  # mechanical check pass for something that reasons.
+  deterministic: false
+risk:
+  # Proposing is not doing. The steps it proposes may well have side effects, and each of
+  # those capabilities declares its own idempotency key; this one changes nothing.
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+# No output schema declared here. The shape is enforced in code rather than by a schema name,
+# because `PlanProposal` has to reject unknown fields to be worth anything (SS 29) and a
+# JSON Schema reference would only describe the shape while the parser is what enforces it.
+timeout_seconds: 180
+retry:
+  # A planner that produced an uncompilable plan may produce a compilable one on a second
+  # attempt, but not a third: past that it is the prompt or the capability set that is wrong.
+  max_attempts: 2

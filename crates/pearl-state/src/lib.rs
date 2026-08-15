@@ -12,6 +12,7 @@
 //! 2. the Exactness Gate (Article 2 — exactness with no verifier cannot auto-complete),
 //! 3. the evidence check (Article 4 — success must be provable).
 
+pub mod migrations;
 pub mod records;
 pub mod spec;
 pub mod store;

@@ -12,5 +12,9 @@
 //! `pearl-executor` after the plan passes through `pearl-plan-compiler`.
 
 mod planner;
+mod proposal;
 
-pub use planner::{ExecutionPlan, PlanBudget, PlanStep, Planner, PlannerError};
+pub use planner::{
+    BadStepRef, ExecutionPlan, PlanBudget, PlanStep, Planner, PlannerError, StepRef, StepRole,
+};
+pub use proposal::{PlanProposal, ProposalError, ProposedKind, ProposedStep};
