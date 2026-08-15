@@ -135,13 +135,7 @@ enum ConstitutionCommand {
 }
 
 fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    init_tracing();
 
     let cli = Cli::parse();
     match dispatch(&cli) {
@@ -151,6 +145,40 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::from(exit::ERROR)
         }
+    }
+}
+
+/// Initialize tracing subscriber.
+///
+/// When `PEARL_LOG_FORMAT=json` is set, outputs structured JSON logs to stderr.
+/// Otherwise, outputs human-readable logs. This satisfies SS60 Observability.
+fn init_tracing() {
+    use tracing_subscriber::prelude::*;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+
+    let log_format = std::env::var("PEARL_LOG_FORMAT").unwrap_or_default();
+
+    if log_format == "json" {
+        let json_layer = tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_span_list(true);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(json_layer)
+            .init();
+    } else {
+        let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
     }
 }
 

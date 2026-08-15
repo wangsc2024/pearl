@@ -9,6 +9,7 @@ description = "PEARL Constitution CI gate: machine checks that make the twelve a
 
 [dependencies]
 pearl-core.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

@@ -326,16 +326,11 @@ impl<S: ProcessSupervisor> RuntimeAdapter for ScriptRuntimeAdapter<S> {
 
 /// Collect stdout/stderr from a supervised process.
 ///
-/// The process supervisor pipes stdout/stderr. After wait() completes, we can read them.
+/// The process supervisor pipes stdout/stderr. After wait() completes, we read them
+/// via [`SupervisedProcess::take_output`]. The handles are consumed on first call, so
+/// subsequent calls return empty strings.
 fn collect_output(proc: &mut pearl_process_supervisor::SupervisedProcess) -> (String, String) {
-    // SupervisedProcess does not expose the Child's stdio directly in the public API,
-    // so we return empty strings here. In real execution, the supervisor captures output.
-    // This is a design boundary: the supervisor holds the Child and its pipes.
-    //
-    // For now, the adapter returns empty strings; a future iteration will add stdout/stderr
-    // collection to the ProcessSupervisor trait (a `collect_output` method).
-    let _ = proc;
-    (String::new(), String::new())
+    proc.take_output()
 }
 
 /// Parse structured output from stdout.

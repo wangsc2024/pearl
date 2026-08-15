@@ -92,3 +92,49 @@ jobs:
             exit 1
           fi
           echo "Gate correctly rejected the violation with exit 2."
+
+  # Article 12: significant changes require an Architecture Decision Record.
+  adr-enforcement:
+    name: Article 12 ADR enforcement
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check ADR requirement for API/schema/constitution changes
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+
+          # Check if any changed file matches the trigger patterns.
+          NEEDS_ADR=false
+          for f in $CHANGED; do
+            case "$f" in
+              crates/*/src/lib.rs) NEEDS_ADR=true; break ;;
+              schemas/*) NEEDS_ADR=true; break ;;
+              CONSTITUTION.md) NEEDS_ADR=true; break ;;
+            esac
+          done
+
+          if [ "$NEEDS_ADR" = "false" ]; then
+            echo "No API/schema/constitution changes detected. ADR not required."
+            exit 0
+          fi
+
+          # Check if an ADR was added or modified in this PR.
+          ADR_PRESENT=false
+          for f in $CHANGED; do
+            case "$f" in
+              docs/adr/ADR-*.md) ADR_PRESENT=true; break ;;
+            esac
+          done
+
+          if [ "$ADR_PRESENT" = "false" ]; then
+            echo "::error::This PR modifies public API (crates/*/src/lib.rs), schemas/, or CONSTITUTION.md but does not include an ADR (docs/adr/ADR-*.md). Article 12 requires architectural decisions to be recorded."
+            exit 1
+          fi
+
+          echo "ADR found. Article 12 satisfied."

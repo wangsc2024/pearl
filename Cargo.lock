@@ -589,6 +589,7 @@ dependencies = [
 name = "pearl-governance"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "pearl-core",
  "serde",
  "serde_json",

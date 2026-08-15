@@ -34,6 +34,7 @@
 
 pub mod checks;
 pub mod manifest;
+pub mod ooda;
 
 pub use checks::{
     check_effect_has_idempotency_key, check_guard_fail_closed, check_has_timeout, check_manifest,

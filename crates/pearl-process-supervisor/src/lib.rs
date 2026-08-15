@@ -111,6 +111,41 @@ impl SupervisedProcess {
     pub fn is_overdue(&self, now: DateTime<Utc>) -> bool {
         self.deadline.is_some_and(|d| now > d)
     }
+
+    /// Read all captured stdout and stderr from the child process.
+    ///
+    /// This should be called after `wait()` has returned (the process has exited).
+    /// The handles are consumed so this can only succeed once. Returns `(stdout, stderr)`.
+    /// If the child or its handles are not available, returns empty strings.
+    pub fn take_output(&mut self) -> (String, String) {
+        use std::io::Read;
+
+        let Some(child) = self.child.as_mut() else {
+            return (String::new(), String::new());
+        };
+
+        let stdout = child
+            .stdout
+            .take()
+            .map(|mut h| {
+                let mut buf = String::new();
+                let _ = h.read_to_string(&mut buf);
+                buf
+            })
+            .unwrap_or_default();
+
+        let stderr = child
+            .stderr
+            .take()
+            .map(|mut h| {
+                let mut buf = String::new();
+                let _ = h.read_to_string(&mut buf);
+                buf
+            })
+            .unwrap_or_default();
+
+        (stdout, stderr)
+    }
 }
 
 /// How a supervised process finished.
