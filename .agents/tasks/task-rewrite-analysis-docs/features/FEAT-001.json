@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-001",
+  "type": "docs",
+  "description": "Rewrite docs/system-analysis.md and docs/architecture-reference-map.md to remove ALL deepseek-harness references and replace them with analysis drawn exclusively from the 9 user-owned reference repos: agent-dashboard, AgentFlow-Notify, daily-digest-prompt, daily_mistral, daily_rust, llamaindex_daily, RAG_Skill, small_daily_tasks. The daily_agent references from the prior version should be replaced by daily_rust (which contains the equivalent Rust scheduler, state store, process supervisor, health monitor code).",
+  "status": "in_progress",
+  "steps": [
+    "Read the current docs/system-analysis.md to understand its structure",
+    "Read the current docs/architecture-reference-map.md to understand its structure",
+    "Explore reference repos (all at /projects/sandbox/) to gather replacement material for the deepseek-harness sections. Key sources: agent-dashboard (SQLite event store with domain events, workflow/step state machines, UUIDv7 envelopes, rusqlite), daily_rust (process supervisor with Job Objects/process groups, scheduler engine with cron/tokio, state store with TaskLock+heartbeat+TaskRunRecord, health monitor with stale lock recovery and profile degradation), daily_rust/agentflow-harness-rust (workflow engine with checkpoint/resume, quality gates, policy guard with command/path validation, DAG executor), daily_mistral (planner-executor with typed steps and plan budget, output validator with jsonschema, loop engine for quality refinement, JSONL event logger with atomic append), llamaindex_daily (workflow orchestrator with DAG-based task deps and parallel execution, policy engine with RBAC roles/risk levels, scheduler with APScheduler), small_daily_tasks (pre_bash_guard.py with YAML rules fallback and cloud-LLM blocking), AgentFlow-Notify (speckit.constitution for spec-driven development governance), RAG_Skill (pnpm monorepo with TypeScript packages, knowledge base patterns)",
+    "Rewrite docs/system-analysis.md: Remove Section B.1 (deepseek-harness) entirely. Replace it with new sections covering agent-dashboard and daily_rust/agentflow-harness-rust patterns for event lifecycle, workflow state machines, checkpoint/resume, quality gates, policy guards. Update Section B.2 (DDP) to reference daily-digest-prompt AND small_daily_tasks hooks. Rename Section B.3 from 'daily_agent' to 'daily_rust' with updated file paths. Add new sections for daily_mistral (planner-executor, loop engine, event logger, output validator), llamaindex_daily (workflow orchestrator, policy engine, scheduler), and RAG_Skill (monorepo structure). Update the Gap Analysis, Technology Decisions, and References sections accordingly.",
+    "Rewrite docs/architecture-reference-map.md: Replace all rows referencing 'deepseek-harness' with equivalent rows from the 9 reference repos. Key replacements: deepseek-harness scheduler -> daily_rust scheduler + llamaindex_daily scheduler, deepseek-harness workflow events -> agent-dashboard domain events, deepseek-harness job registry -> agent-dashboard workflow store + daily_rust state TaskLock, deepseek-harness timeout-policy -> daily_rust/agentflow-harness-rust policy guard + small_daily_tasks pre_bash_guard, deepseek-harness schedule -> daily_rust cron scheduler. Update the legend to remove deepseek-harness. Update Summary Statistics.",
+    "Verify no 'deepseek' references remain in docs/system-analysis.md or docs/architecture-reference-map.md",
+    "Commit changes with message: 'docs: rewrite system analysis and architecture reference map without deepseek-harness'"
+  ],
+  "acceptance_criteria": [
+    "docs/system-analysis.md contains zero references to deepseek-harness",
+    "docs/architecture-reference-map.md contains zero references to deepseek-harness",
+    "Both documents reference only the 9 user-owned repos as sources",
+    "The analysis quality is maintained - specific file paths, code examples, and pattern descriptions are included from the actual reference repos",
+    "Changes are committed to git on the main branch"
+  ],
+  "verification": [
+    "Run: grep -ic 'deepseek' /projects/sandbox/pearl/docs/system-analysis.md (expect 0)",
+    "Run: grep -ic 'deepseek' /projects/sandbox/pearl/docs/architecture-reference-map.md (expect 0)",
+    "Run: cd /projects/sandbox/pearl && git log --oneline -1 (expect new commit)"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

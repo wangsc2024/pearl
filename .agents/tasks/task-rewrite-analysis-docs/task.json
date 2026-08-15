@@ -1,0 +1,7 @@
+{
+  "task_id": "task-rewrite-analysis-docs",
+  "task_description": "Rewrite docs/system-analysis.md and docs/architecture-reference-map.md to remove all deepseek-harness references, replacing them with analysis from the 9 user-owned reference repos only.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}
