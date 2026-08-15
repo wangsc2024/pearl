@@ -50,13 +50,17 @@ steps:
     input_from:
       result: steps.assemble.output
     input:
-      require_keys: [topic, koan_markdown]
+      require_keys: [topic, koan_markdown, sections, complete]
       types:
         koan_markdown: string
-      # The failure this exists for: DDP saw a small model return a single line, which is a
-      # successful generation and not a koan. A length floor is the mechanical form of "the
-      # model actually wrote something".
+        sections: object
+        complete: boolean
       non_empty: [topic, koan_markdown]
+      expect:
+        # The failure this exists for: DDP saw a small model return a single line, which is a
+        # successful generation and not a koan. `complete` is the assembler's own per-section
+        # measurement, and asserting it here is what stops a one-liner reaching the operator.
+        complete: true
 
   - id: push
     capability: effect.notify

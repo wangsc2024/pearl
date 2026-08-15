@@ -25,18 +25,29 @@ id: script.zen-koan-select
 version: 1
 type: script
 kind: transformer
-description: |
-  Picks the next koan from a candidate pool, avoiding recent repeats. NOT IMPLEMENTED -- no
-  entrypoint yet; the rotation rule still has to be read out of DDP's tools/zen_koan_select.py
-  and config/zen-koan-candidates.md before it can be claimed to be ported.
+description: Picks the next koan from a catalogue, never repeating one until it is exhausted.
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: ../scripts/zen_koan_select.py
 quality:
-  # Selection from a fixed pool by a fixed rotation rule. Whether it stays deterministic
-  # depends on how the rotation state is threaded; that is settled when it is implemented.
+  # Catalogue order, not chance. DDP's original used `random.choice`, which meant a run could
+  # never be reproduced; the contract it was serving is "do not repeat until exhausted", and
+  # order satisfies that. A caller who wants shuffling passes a seed, which shuffles
+  # reproducibly.
+  #
+  # "Same input" here includes the rotation history and the date, both of which are inputs.
+  # Given all three, the answer is always the same.
   deterministic: true
 risk:
+  # It writes its rotation history, which is its own state rather than anything externally
+  # visible -- so no idempotency key is required (Article 5 is about effects on the world).
+  #
+  # What keeps that declaration honest under retry is that selection is idempotent per date:
+  # the history records which koan belongs to which day, and a second call on the same day
+  # returns the same one. DDP's version appended on every call, so a retried task consumed a
+  # second koan and the first was never pushed.
   side_effect: false
 platform:
   windows: true
@@ -82,13 +93,15 @@ version: 1
 type: script
 kind: transformer
 description: |
-  Shapes a composed koan into the result document, rejecting output too short to be one.
-  NOT IMPLEMENTED -- no entrypoint yet; ported from DDP's tools/zen_koan_assemble.py.
+  Shapes a composed koan into the document that gets pushed, and measures each section so a
+  half-written one is detectable.
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: ../scripts/zen_koan_assemble.py
 quality:
-  # String assembly and a length check. Nothing to decide.
+  # Normalisation and character counts. Nothing to decide.
   deterministic: true
 risk:
   side_effect: false
