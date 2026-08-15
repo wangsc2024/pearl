@@ -275,6 +275,7 @@ mod tests {
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             precision_class: class,
             timeout: Duration::from_secs(30),
+            exactness_required: false,
         }
     }
 

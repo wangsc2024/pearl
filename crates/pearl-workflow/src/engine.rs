@@ -39,6 +39,13 @@ pub struct WorkflowStep {
     /// Group id for parallel steps (steps in the same group run concurrently).
     #[serde(default)]
     pub parallel_group: Option<String>,
+    /// Whether this step's result must be exact, and therefore verified — §22, §30.
+    ///
+    /// Declared per step rather than inferred, because only the workflow's author knows which
+    /// results are load-bearing. A step that declares it and has no `verify` step depending on
+    /// it will not compile.
+    #[serde(default)]
+    pub exactness_required: bool,
 }
 
 fn default_timeout_secs() -> u64 {
@@ -85,6 +92,7 @@ impl WorkflowDef {
                     depends_on: ws.depends_on.clone(),
                     precision_class,
                     timeout: Duration::from_secs(ws.timeout_secs),
+                    exactness_required: ws.exactness_required,
                 }
             })
             .collect()

@@ -57,7 +57,8 @@ use pearl_process_supervisor::PlatformSupervisor;
 use pearl_queue::{QueueError, RetryPolicy, WorkQueue};
 use pearl_router::{Router, RoutingDecision, TaskRequirements};
 use pearl_runtime::{
-    agent_adapter_for, RuntimeAdapter, RuntimeResult, ScriptRuntimeAdapter, ScriptSpec,
+    family_of, AgentCliAdapter, ApiRuntimeAdapter, RuntimeAdapter, RuntimeFamily, RuntimeResult,
+    ScriptRuntimeAdapter, ScriptSpec,
 };
 use pearl_state::{StateError, StateStore, TaskRecord};
 use serde::{Deserialize, Serialize};
@@ -324,6 +325,14 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
         let capability_id = selection.capability_id.clone();
         let timeout = selection.timeout;
 
+        // Ask the runtime whether it could run this, before anything is opened. A missing
+        // credential or an unfillable prompt is knowable without executing, and discovering it
+        // after `start_run` would leave a run recorded for work that never began — and, for a
+        // paid endpoint, would be the wrong moment to find out.
+        if let Err(refusal) = self.preflight(&selection, &task) {
+            return self.refuse(store, &task, lease_id, refusal, started_at);
+        }
+
         // Re-take the claim for long enough to cover the work. See the module note: a
         // synchronous worker cannot heartbeat, so the lease has to be sized up front.
         let leases = LeaseManager::new(lease_config_for(timeout), self.clock.clone());
@@ -346,14 +355,36 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
         let attempt = store.start_attempt(run.run_id, task.attempt_count + 1, self.clock.now())?;
 
         // --- execute (Article 9) ---
+        let mechanical = selection.runtime.is_mechanical();
         self.record(
             store,
             &task,
-            PearlEvent::ScriptStarted {
-                task_id: Some(task_id.clone()),
-                capability_id: capability_id.clone(),
-                runtime: selection.runtime.as_str().to_string(),
+            // Article 1 makes this distinction the most important fact about an execution,
+            // and §71 measures the ratio, so the ledger records which side it was on.
+            if mechanical {
+                PearlEvent::ScriptStarted {
+                    task_id: Some(task_id.clone()),
+                    capability_id: capability_id.clone(),
+                    runtime: selection.runtime.as_str().to_string(),
+                }
+            } else {
+                PearlEvent::AgentStarted {
+                    task_id: Some(task_id.clone()),
+                    capability_id: capability_id.clone(),
+                    runtime: selection.runtime.as_str().to_string(),
+                    model: None,
+                }
             },
+        )?;
+        store.record_step(
+            &pearl_state::StepRecord::new(
+                run.run_id,
+                1,
+                &capability_id,
+                format!("execute {capability_id}"),
+                "running",
+            )
+            .started(started_at),
         )?;
 
         let execution = self.execute_capability(&selection, &task);
@@ -361,18 +392,45 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
 
         match &execution {
             Ok(result) => {
+                // -1 for a process that never reported a code of its own: killed, signalled
+                // or timed out. The event records that it did not exit normally rather than
+                // inventing a plausible code.
+                let exit_code = exit_code_of(result).unwrap_or(-1);
+                let duration_ms = result.duration.num_milliseconds().max(0) as u64;
                 self.record(
                     store,
                     &task,
-                    PearlEvent::ScriptCompleted {
-                        task_id: Some(task_id.clone()),
-                        capability_id: capability_id.clone(),
-                        // -1 for a process that never reported a code of its own: killed,
-                        // signalled or timed out. The event records that it did not exit
-                        // normally rather than inventing a plausible code.
-                        exit_code: exit_code_of(result).unwrap_or(-1),
-                        duration_ms: result.duration.num_milliseconds().max(0) as u64,
+                    if mechanical {
+                        PearlEvent::ScriptCompleted {
+                            task_id: Some(task_id.clone()),
+                            capability_id: capability_id.clone(),
+                            exit_code,
+                            duration_ms,
+                        }
+                    } else {
+                        PearlEvent::AgentCompleted {
+                            task_id: Some(task_id.clone()),
+                            capability_id: capability_id.clone(),
+                            exit_code,
+                            duration_ms,
+                            tokens: token_usage(result),
+                        }
                     },
+                )?;
+                store.record_step(
+                    &pearl_state::StepRecord::new(
+                        run.run_id,
+                        1,
+                        &capability_id,
+                        format!("execute {capability_id}"),
+                        if result.is_success() {
+                            "success"
+                        } else {
+                            "failed"
+                        },
+                    )
+                    .started(started_at)
+                    .completed(self.clock.now()),
                 )?;
             }
             Err(refusal) => {
@@ -405,7 +463,15 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
         let spec = self.assurance_spec(&task.plan, &selection);
         let assurance = self.verify(&spec, subject.clone(), envelope, timeout);
 
-        for check in &assurance.details {
+        for (index, check) in assurance.details.iter().enumerate() {
+            self.record(
+                store,
+                &task,
+                PearlEvent::VerificationStarted {
+                    task_id: task_id.clone(),
+                    verifier_id: check.name.clone(),
+                },
+            )?;
             let event = match &check.outcome {
                 CheckOutcome::Passed => PearlEvent::VerificationPassed {
                     task_id: task_id.clone(),
@@ -421,6 +487,44 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
                 }
             };
             self.record(store, &task, event)?;
+
+            // The verdict is queryable, not only replayable: "what verified this task?" is
+            // the question an audit asks, and answering it should not require a replay.
+            store.record_verification(
+                &task_id,
+                &check.name,
+                check.outcome.passed(),
+                check.outcome.reason(),
+                self.clock.now(),
+            )?;
+            store.record_step(
+                &pearl_state::StepRecord::new(
+                    run.run_id,
+                    (index + 2) as u32,
+                    &check.name,
+                    format!("verify {}", check.name),
+                    match &check.outcome {
+                        CheckOutcome::Passed => "success",
+                        CheckOutcome::Failed { .. } => "failed",
+                        // Skipped rather than failed: the check never reached a verdict.
+                        CheckOutcome::Errored { .. } => "skipped",
+                    },
+                )
+                .started(started_at)
+                .completed(self.clock.now()),
+            )?;
+        }
+
+        // Artifacts the capability declared it produced (§44). Recorded only when the file
+        // exists and its digest can be taken: an index entry pointing at nothing would be
+        // worse than no entry.
+        for artifact in declared_artifacts(
+            &result,
+            &task_id,
+            self.clock.now(),
+            &self.config.working_dir,
+        ) {
+            store.record_artifact(&artifact)?;
         }
 
         // --- evidence (Article 4) ---
@@ -589,18 +693,81 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
                     ),
                 }),
             RoutingDecision::AgentRoute { precision, reason } => {
-                // Article 1 permits an agent here, but only if one is actually configured.
-                // Saying so plainly beats routing into a stub and reporting a failed run.
-                Err(Refusal::NoCapability {
-                    detail: format!(
-                        "no mechanical capability for task_type '{}' at {}: {reason}",
-                        task.task_type,
-                        precision.as_str()
-                    ),
-                })
+                // Article 1 has been satisfied: no mechanical capability exists, so an agent
+                // is permitted. Look for one that names this task type before giving up,
+                // otherwise a perfectly configured agent capability would never be reachable
+                // except by a task naming it explicitly.
+                self.find_agent_capability(&task.task_type)
+                    .ok_or_else(|| Refusal::NoCapability {
+                        detail: format!(
+                            "no capability for task_type '{}' at {}: {reason}",
+                            task.task_type,
+                            precision.as_str()
+                        ),
+                    })
             }
             RoutingDecision::Rejected { reason } => Err(Refusal::NoCapability { detail: reason }),
         }
+    }
+
+    /// An agent capability whose id mentions this task type.
+    ///
+    /// Exact match first, then a prefixed convention (`agent.<task_type>`), then any agent
+    /// capability mentioning it. Ordered from most to least specific so a registry with
+    /// several agents does not resolve by accident.
+    fn find_agent_capability(&self, task_type: &str) -> Option<&RegisteredCapability> {
+        let agents: Vec<&RegisteredCapability> = self
+            .registry
+            .iter()
+            .filter(|c| !c.manifest.execution.runtime.is_mechanical())
+            .collect();
+
+        agents
+            .iter()
+            .find(|c| c.manifest.id == task_type)
+            .or_else(|| {
+                agents
+                    .iter()
+                    .find(|c| c.manifest.id == format!("agent.{task_type}"))
+            })
+            .or_else(|| agents.iter().find(|c| c.manifest.id.contains(task_type)))
+            .copied()
+    }
+
+    /// The execution request for a selected capability.
+    fn build_spec(&self, selection: &Selection, task: &TaskRecord) -> ScriptSpec {
+        ScriptSpec {
+            runtime: selection.runtime,
+            entrypoint: selection.entrypoint.clone(),
+            args: selection.args.clone(),
+            env: Default::default(),
+            cwd: self.config.working_dir.clone(),
+            timeout: selection.timeout,
+            input_payload: Some(task_payload(task)),
+        }
+    }
+
+    /// Asks the runtime whether it is in a position to run this, without running it.
+    ///
+    /// Everything checked here is knowable in advance: whether the tool is installed, whether
+    /// a credential exists, whether the prompt's placeholders can be filled. Checking it
+    /// before a run is opened is what makes "an unconfigured provider costs nothing" true.
+    fn preflight(&self, selection: &Selection, task: &TaskRecord) -> Result<(), Refusal> {
+        let spec = self.build_spec(selection, task);
+        let outcome = match family_of(selection.runtime) {
+            RuntimeFamily::Mechanical => {
+                ScriptRuntimeAdapter::new(PlatformSupervisor::default()).validate(&spec)
+            }
+            RuntimeFamily::AgentCli(cli) => {
+                AgentCliAdapter::new(cli, PlatformSupervisor::default()).validate(&spec)
+            }
+            RuntimeFamily::Api(provider) => ApiRuntimeAdapter::new(provider).validate(&spec),
+        };
+
+        outcome.map_err(|e| Refusal::NoRuntime {
+            capability: selection.capability_id.clone(),
+            runtime: format!("{}: {e}", selection.runtime.as_str()),
+        })
     }
 
     /// Runs the selected capability.
@@ -609,28 +776,19 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
         selection: &Selection,
         task: &TaskRecord,
     ) -> Result<RuntimeResult, Refusal> {
-        let spec = ScriptSpec {
-            runtime: selection.runtime,
-            entrypoint: selection.entrypoint.clone(),
-            args: selection.args.clone(),
-            env: Default::default(),
-            cwd: self.config.working_dir.clone(),
-            timeout: selection.timeout,
-            input_payload: Some(task_payload(task)),
-        };
+        let spec = self.build_spec(selection, task);
 
-        let outcome = if selection.runtime.is_mechanical() {
-            let adapter = ScriptRuntimeAdapter::new(PlatformSupervisor::default());
-            adapter.execute(&spec, &self.clock)
-        } else {
-            match agent_adapter_for(selection.runtime) {
-                Some(adapter) => adapter.execute(&spec, &self.clock),
-                None => {
-                    return Err(Refusal::NoRuntime {
-                        capability: selection.capability_id.clone(),
-                        runtime: selection.runtime.as_str().to_string(),
-                    })
-                }
+        // Dispatch by family rather than by a mechanical/other split: an agent CLI is a
+        // supervised process and an API call is not, and the difference is not incidental.
+        let outcome = match family_of(selection.runtime) {
+            RuntimeFamily::Mechanical => {
+                ScriptRuntimeAdapter::new(PlatformSupervisor::default()).execute(&spec, &self.clock)
+            }
+            RuntimeFamily::AgentCli(cli) => {
+                AgentCliAdapter::new(cli, PlatformSupervisor::default()).execute(&spec, &self.clock)
+            }
+            RuntimeFamily::Api(provider) => {
+                ApiRuntimeAdapter::new(provider).execute(&spec, &self.clock)
             }
         };
 
@@ -801,17 +959,21 @@ impl<C: Clock + Clone + Send + Sync + 'static> Worker<C> {
         let now = self.clock.now();
         let detail = refusal.detail();
 
-        // BLOCKED, not FAILED: nothing ran, and nothing will until a human adds the
-        // capability, the permission, or the platform support. Retrying would only
-        // rediscover the same refusal.
-        let target = if task.state == TaskState::Leased {
-            TaskState::Ready
-        } else {
-            TaskState::Blocked
-        };
-        if target == TaskState::Ready {
-            // Return it to the queue first so the state machine's Leased → Ready edge is
-            // used as intended, then block it from there.
+        // The current state, not the snapshot taken at claim time: a refusal can happen after
+        // the task has already moved to RUNNING (a runtime that turns out to be unconfigured
+        // is only discovered once execution is attempted), and transitioning from a stale
+        // state is how a legal path gets rejected as illegal.
+        let current = store
+            .get_task(&task.task_id)?
+            .map(|t| t.state)
+            .unwrap_or(task.state);
+
+        // BLOCKED, not FAILED: nothing ran to completion, and nothing will until a human adds
+        // the capability, the permission, the credential or the platform support. A retry
+        // would only rediscover the same refusal.
+        if current == TaskState::Leased {
+            // LEASED cannot reach BLOCKED directly, and the queue edge is the one the state
+            // machine provides for "claimed but not started".
             store.transition(
                 &task.task_id,
                 TaskState::Ready,
@@ -938,6 +1100,74 @@ fn verification_envelope(
         "result": subject,
         "stderr": result.stderr.trim(),
     })
+}
+
+/// Tokens an agent runtime reported, if it reported any.
+///
+/// Read from the structured output rather than assumed, because only the runtime knows.
+/// Accepts the OpenAI-compatible shape (`usage.total_tokens`) and a bare `tokens`.
+fn token_usage(result: &RuntimeResult) -> Option<u64> {
+    let output = result.structured_output.as_ref()?;
+    output
+        .get("usage")
+        .and_then(|u| u.get("total_tokens"))
+        .or_else(|| output.get("tokens"))
+        .and_then(|t| t.as_u64())
+}
+
+/// Artifacts a capability declared in its output.
+///
+/// The contract is a top-level `artifacts` array of `{path, type}`. Each is digested here
+/// rather than trusted: Article 4 evidence is only as good as the bytes it names, and a
+/// declared path that does not exist is a claim, not an artifact.
+fn declared_artifacts(
+    result: &RuntimeResult,
+    task_id: &pearl_core::TaskId,
+    now: DateTime<Utc>,
+    working_dir: &Option<PathBuf>,
+) -> Vec<pearl_state::Artifact> {
+    use sha2::{Digest, Sha256};
+
+    let Some(declared) = result
+        .structured_output
+        .as_ref()
+        .and_then(|v| v.get("artifacts"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let mut artifacts = Vec::new();
+    for entry in declared {
+        let Some(path) = entry.get("path").and_then(|p| p.as_str()) else {
+            continue;
+        };
+        let resolved = match (Path::new(path).is_absolute(), working_dir) {
+            (false, Some(dir)) => dir.join(path),
+            _ => PathBuf::from(path),
+        };
+        let Ok(bytes) = std::fs::read(&resolved) else {
+            tracing::warn!(
+                path = %resolved.display(),
+                "capability declared an artifact that does not exist; not recording it"
+            );
+            continue;
+        };
+        artifacts.push(pearl_state::Artifact {
+            artifact_id: format!("{task_id}:{path}"),
+            task_id: task_id.clone(),
+            artifact_type: entry
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("output")
+                .to_string(),
+            path: resolved.to_string_lossy().to_string(),
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            size_bytes: bytes.len() as u64,
+            created_at: now,
+        });
+    }
+    artifacts
 }
 
 fn exit_code_of(result: &RuntimeResult) -> Option<i32> {

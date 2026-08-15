@@ -105,21 +105,16 @@ impl PlanCompiler {
             }
         }
 
-        // Check verifiers for exactness steps (P0, P1).
-        // Only check when a capability registry is provided (known_capabilities non-empty),
-        // since verifier existence depends on registry context.
-        if !self.config.known_capabilities.is_empty() {
-            for step in &plan.steps {
-                let needs_verifier = matches!(
-                    step.precision_class,
-                    pearl_core::PrecisionClass::P0 | pearl_core::PrecisionClass::P1
-                );
-                if needs_verifier && !self.config.verified_steps.contains(&step.id) {
-                    errors.push(CompileError::MissingVerifier {
-                        step: step.id.clone(),
-                        class: format!("{:?}", step.precision_class),
-                    });
-                }
+        // §30: a step that demands exactness must have a verifier. The trigger is the step's
+        // own declaration, not its precision class — and it is checked unconditionally, because
+        // an exactness demand with nothing to satisfy it is a violation whether or not the
+        // caller supplied a registry.
+        for step in &plan.steps {
+            if step.exactness_required && !self.config.verified_steps.contains(&step.id) {
+                errors.push(CompileError::MissingVerifier {
+                    step: step.id.clone(),
+                    class: format!("{:?}", step.precision_class),
+                });
             }
         }
 
@@ -279,6 +274,7 @@ mod tests {
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             precision_class: class,
             timeout: Duration::from_secs(30),
+            exactness_required: false,
         }
     }
 
@@ -289,6 +285,7 @@ mod tests {
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             precision_class: class,
             timeout: Duration::ZERO,
+            exactness_required: false,
         }
     }
 
@@ -401,7 +398,12 @@ mod tests {
             known_capabilities: all_caps(),
             verified_steps: HashSet::new(), // No verifiers
         });
-        let p = plan(vec![step("a", "cap.a", &[], PrecisionClass::P0)]);
+        // §30 keys the obligation on the step's own exactness demand, not on its precision
+        // class: a mechanical step can be a best-effort probe, and demanding a verifier for
+        // every one of them made ordinary plans impossible to compile.
+        let mut declared = step("a", "cap.a", &[], PrecisionClass::P0);
+        declared.exactness_required = true;
+        let p = plan(vec![declared]);
         let errs = compiler.compile(&p).unwrap_err();
         assert!(errs
             .iter()
@@ -409,7 +411,32 @@ mod tests {
     }
 
     #[test]
-    fn p3_steps_do_not_require_verifier() {
+    fn an_exactness_step_with_a_verifier_compiles() {
+        let compiler = PlanCompiler::new(CompilerConfig {
+            known_capabilities: all_caps(),
+            verified_steps: HashSet::from(["a".to_string()]),
+        });
+        let mut declared = step("a", "cap.a", &[], PrecisionClass::P0);
+        declared.exactness_required = true;
+        assert!(compiler.compile(&plan(vec![declared])).is_ok());
+    }
+
+    #[test]
+    fn an_exactness_demand_is_checked_even_with_no_registry() {
+        // A demand with nothing to satisfy it is a violation whether or not the caller
+        // supplied a capability set; the previous behaviour skipped the check entirely when
+        // the registry was empty, which is the default.
+        let compiler = PlanCompiler::default();
+        let mut declared = step("a", "cap.a", &[], PrecisionClass::P0);
+        declared.exactness_required = true;
+        let errs = compiler.compile(&plan(vec![declared])).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, CompileError::MissingVerifier { .. })));
+    }
+
+    #[test]
+    fn a_step_making_no_exactness_demand_needs_no_verifier() {
         let compiler = PlanCompiler::new(CompilerConfig {
             known_capabilities: all_caps(),
             verified_steps: HashSet::new(), // No verifiers

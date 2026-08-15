@@ -11,7 +11,7 @@
 
 use crate::records::{
     Artifact, AttemptRecord, CheckpointRecord, ConfigRevision, EffectRecord, EvidenceRecord,
-    LeaseRecord, PolicyDecision, RunRecord, RuntimeHealth, StepRecord, TaskRecord,
+    LeaseRecord, PolicyDecision, RunRecord, RuntimeHealth, ScheduleRecord, StepRecord, TaskRecord,
     VerificationResult,
 };
 use chrono::{DateTime, Utc};
@@ -124,9 +124,16 @@ CREATE INDEX IF NOT EXISTS idx_checkpoints_task ON checkpoints (task_id);
 CREATE TABLE IF NOT EXISTS schedules (
     schedule_id     TEXT PRIMARY KEY,
     task_type       TEXT    NOT NULL,
+    -- The task spec each occurrence is submitted from. A schedule cannot point at a task,
+    -- because a recurring schedule would then re-run one task id forever; it points at the
+    -- declaration and submits a fresh task each time (SS 47).
+    spec_path       TEXT    NOT NULL,
     cron_expr       TEXT,
     interval_secs   INTEGER,
+    timezone        TEXT,
+    misfire_policy  TEXT    NOT NULL DEFAULT 'skip',
     next_run_at     TEXT,
+    last_triggered_at TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT    NOT NULL
 );
@@ -747,6 +754,102 @@ impl StateStore {
         let tx = self.ledger.connection_mut().transaction()?;
         append_in_tx(&tx, &envelope)?;
         mark_effect_committed(&tx, key, now)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- schedules
+
+    /// Registers or updates a schedule — §47.
+    ///
+    /// Persisted because an in-memory schedule is lost on restart, which for a daily digest
+    /// means the day it restarts is the day nothing runs.
+    pub fn upsert_schedule(&mut self, schedule: &ScheduleRecord) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO schedules
+                (schedule_id, task_type, spec_path, cron_expr, interval_secs, timezone,
+                 misfire_policy, next_run_at, last_triggered_at, enabled, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                schedule.schedule_id,
+                schedule.task_type,
+                schedule.spec_path,
+                schedule.cron_expr,
+                schedule.interval_secs.map(|s| s as i64),
+                schedule.timezone,
+                schedule.misfire_policy,
+                schedule.next_run_at.map(|t| t.to_rfc3339()),
+                schedule.last_triggered_at.map(|t| t.to_rfc3339()),
+                schedule.enabled as i32,
+                schedule.created_at.to_rfc3339(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every registered schedule, by id.
+    pub fn list_schedules(&self) -> Result<Vec<ScheduleRecord>, StateError> {
+        let conn = self.ledger.connection();
+        let mut stmt = conn.prepare(
+            "SELECT schedule_id, task_type, spec_path, cron_expr, interval_secs, timezone,
+                    misfire_policy, next_run_at, last_triggered_at, enabled, created_at
+             FROM schedules ORDER BY schedule_id ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_schedule)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn get_schedule(&self, schedule_id: &str) -> Result<Option<ScheduleRecord>, StateError> {
+        Ok(self
+            .ledger
+            .connection()
+            .query_row(
+                "SELECT schedule_id, task_type, spec_path, cron_expr, interval_secs, timezone,
+                        misfire_policy, next_run_at, last_triggered_at, enabled, created_at
+                 FROM schedules WHERE schedule_id = ?1",
+                params![schedule_id],
+                row_to_schedule,
+            )
+            .optional()?)
+    }
+
+    /// Records that a schedule fired.
+    ///
+    /// Written immediately after the occurrence is submitted, so a crash between the two
+    /// re-fires rather than skips. For a schedule, a duplicate occurrence is recoverable and
+    /// a missed one is not.
+    pub fn mark_schedule_triggered(
+        &mut self,
+        schedule_id: &str,
+        at: DateTime<Utc>,
+        next_run_at: Option<DateTime<Utc>>,
+    ) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "UPDATE schedules SET last_triggered_at = ?1, next_run_at = ?2 WHERE schedule_id = ?3",
+            params![
+                at.to_rfc3339(),
+                next_run_at.map(|t| t.to_rfc3339()),
+                schedule_id
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Enables or disables a schedule without forgetting it.
+    pub fn set_schedule_enabled(
+        &mut self,
+        schedule_id: &str,
+        enabled: bool,
+    ) -> Result<(), StateError> {
+        let tx = self.ledger.connection_mut().transaction()?;
+        tx.execute(
+            "UPDATE schedules SET enabled = ?1 WHERE schedule_id = ?2",
+            params![enabled as i32, schedule_id],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -1747,6 +1850,8 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
         | PearlEvent::VerificationStarted { .. }
         | PearlEvent::VerificationPassed { .. }
         | PearlEvent::VerificationFailed { .. }
+        | PearlEvent::AgentStarted { .. }
+        | PearlEvent::AgentCompleted { .. }
         | PearlEvent::EffectDeduplicated { .. } => Ok(false),
     }
 }
@@ -1797,6 +1902,22 @@ fn insert_checkpoint(
         ],
     )?;
     Ok(())
+}
+
+fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRecord> {
+    Ok(ScheduleRecord {
+        schedule_id: row.get(0)?,
+        task_type: row.get(1)?,
+        spec_path: row.get(2)?,
+        cron_expr: row.get(3)?,
+        interval_secs: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+        timezone: row.get(5)?,
+        misfire_policy: row.get(6)?,
+        next_run_at: parse_time_opt(row, 7)?,
+        last_triggered_at: parse_time_opt(row, 8)?,
+        enabled: row.get::<_, i32>(9)? != 0,
+        created_at: parse_time(row, 10)?,
+    })
 }
 
 fn row_to_step(row: &rusqlite::Row<'_>) -> rusqlite::Result<StepRecord> {

@@ -12,6 +12,7 @@ pearl-core.workspace = true
 pearl-events.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 thiserror.workspace = true

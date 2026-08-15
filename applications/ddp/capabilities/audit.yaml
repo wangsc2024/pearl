@@ -35,15 +35,39 @@ platform:
 timeout_seconds: 30
 
 ---
+id: script.audit-facts
+version: 1
+type: script
+kind: diagnostic
+description: Collects the mechanically checkable facts a system audit rests on.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/audit_facts.py
+quality:
+  # §65 splits the audit: counts, coverage and freshness are arithmetic and belong here;
+  # interpreting them is the agent's part, in a separate capability.
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 120
+
+# NOT IMPLEMENTED. No entrypoint, so the registry says so rather than implying a script.
+---
 id: script.health-probe
 version: 1
 type: script
-description: Probes system health metrics (uptime, resource usage, queue depth).
+kind: diagnostic
+description: Probes host health metrics. NOT IMPLEMENTED -- no entrypoint yet.
 execution:
   kind: script
   runtime: python
 quality:
-  deterministic: true
+  deterministic: false
 risk:
   side_effect: false
 platform:

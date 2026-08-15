@@ -323,6 +323,14 @@ pub fn parse_manifest_documents(
         if value.is_null() {
             continue;
         }
+        if !looks_like_manifest(&value) {
+            // §57 puts workflows under `capabilities/workflows/`, so this tree legitimately
+            // holds YAML that is not a manifest. Skipping by shape rather than by directory
+            // keeps the layout free while staying strict where it matters: a document that
+            // *does* look like a manifest but is malformed still fails loudly, because a typo
+            // in a capability id must not become a silently missing capability.
+            continue;
+        }
         let manifest = serde_yaml::from_value::<CapabilityManifest>(value).map_err(|e| {
             RegistryError::Parse {
                 path: path.to_path_buf(),
@@ -332,6 +340,18 @@ pub fn parse_manifest_documents(
         manifests.push(manifest);
     }
     Ok(manifests)
+}
+
+/// Whether a YAML document is attempting to be a capability manifest.
+///
+/// The carve-out is deliberately as narrow as possible: only a document with `steps` and no
+/// `execution` is skipped, because that is a workflow definition and nothing else. Anything
+/// else — including a document with just an `id` — is parsed strictly, so a manifest with a
+/// missing field is still reported rather than silently dropped. A capability that vanishes
+/// from the registry because of a typo is the failure this narrowness exists to prevent.
+fn looks_like_manifest(value: &serde_yaml::Value) -> bool {
+    let is_workflow = value.get("steps").is_some() && value.get("execution").is_none();
+    !is_workflow
 }
 
 /// Collapses `.` and `..` without touching the filesystem.

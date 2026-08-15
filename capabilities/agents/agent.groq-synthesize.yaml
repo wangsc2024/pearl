@@ -1,0 +1,46 @@
+# An agent capability. Article 1 permits this only because synthesis is not a deterministic
+# operation: there is no formula that turns collected facts into a readable narrative, so
+# there is something here for a model to decide.
+#
+# Article 8 still applies. This capability generates; it does not verify. A task using it
+# must declare its own assurance, and the Exactness Gate will refuse to auto-complete if it
+# demands exactness without one.
+#
+# Requires GROQ_API_KEY and GROQ_MODEL. With neither set the worker refuses before making a
+# request, so an unconfigured deployment costs nothing.
+id: agent.groq-synthesize
+version: 1
+type: agent
+kind: transformer
+description: Synthesises collected facts into a narrative summary using Groq.
+execution:
+  kind: agent
+  runtime: groq
+  entrypoint:
+    # A prompt template, not a script: Article 3's mirror image is that prompt content
+    # belongs in reviewable files rather than in code.
+    script: prompts/synthesize.md
+quality:
+  # A model's output is not reproducible, and claiming otherwise would let Article 1's
+  # mechanical check pass for something that reasons.
+  deterministic: false
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+# No output schema is declared here on purpose. The shape the prompt asks for is a property
+# of how a *task* uses this capability, not of the capability itself, and a task states it as
+# a verifier parameter so the check is visible where the promise is made:
+#
+#   assurance:
+#     - script: verifier.task-result
+#       input:
+#         require_keys: [summary, highlights, sources]
+#         types: { highlights: array, sources: array }
+#
+# Article 8: this capability generates, and something else decides whether it succeeded.
+timeout_seconds: 120
+retry:
+  # Retrying costs tokens, so the budget for being wrong is small.
+  max_attempts: 2

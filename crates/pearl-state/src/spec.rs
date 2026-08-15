@@ -1,7 +1,11 @@
 //! Task spec loading — mirrors `schemas/task-spec-v1.json`.
+//!
+//! Lives here rather than in the CLI because a spec is not a CLI concept: the scheduler
+//! submits tasks from spec files too, and a type only the CLI could parse would have forced
+//! the daemon to reimplement it — which is how two parsers disagree about the Article 2 gate.
 
+use crate::TaskSubmission;
 use pearl_core::{AssuranceStep, PrecisionClass, QualitySpec, TaskId, TaskPlan};
-use pearl_state::TaskSubmission;
 use serde::{Deserialize, Serialize};
 
 /// A submitted task spec.
@@ -32,6 +36,26 @@ impl TaskSpec {
         serde_yaml::from_str(source).map_err(|e| SpecError::Parse {
             detail: e.to_string(),
         })
+    }
+
+    /// Loads a spec from a file.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, SpecError> {
+        let path = path.as_ref();
+        let source = std::fs::read_to_string(path).map_err(|e| SpecError::Parse {
+            detail: format!("{}: {e}", path.display()),
+        })?;
+        Self::parse(&source)
+    }
+
+    /// Converts into a submission under a different id.
+    ///
+    /// Used by the scheduler: a recurring schedule submits a new task each time it fires, and
+    /// reusing the spec's id would collide with the previous occurrence. The id is the only
+    /// thing that changes — the plan and quality contract are the spec's, so a scheduled run
+    /// is verified exactly as a manual one would be.
+    pub fn into_submission_as(mut self, task_id: &str) -> Result<TaskSubmission, SpecError> {
+        self.id = task_id.to_string();
+        self.into_submission()
     }
 
     /// Validates and converts into a submission.

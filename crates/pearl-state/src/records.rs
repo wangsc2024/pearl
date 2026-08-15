@@ -88,6 +88,85 @@ impl LeaseRecord {
     }
 }
 
+/// A registered schedule — §47.
+///
+/// Points at a task *spec*, not a task. A recurring schedule that named a task would re-run
+/// one task id forever; naming the declaration lets each occurrence be a new task with its own
+/// run, attempts and evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleRecord {
+    pub schedule_id: String,
+    pub task_type: String,
+    /// Path to the task spec each occurrence is submitted from.
+    pub spec_path: String,
+    /// 5-field cron expression, when the schedule is cron-driven.
+    pub cron_expr: Option<String>,
+    /// Fixed interval in seconds, when the schedule is interval-driven.
+    pub interval_secs: Option<u64>,
+    /// IANA timezone name for cron evaluation.
+    pub timezone: Option<String>,
+    /// `skip`, `run_once` or `run_all`.
+    pub misfire_policy: String,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+impl ScheduleRecord {
+    /// A cron schedule.
+    pub fn cron(
+        schedule_id: impl Into<String>,
+        task_type: impl Into<String>,
+        spec_path: impl Into<String>,
+        expression: impl Into<String>,
+        now: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            schedule_id: schedule_id.into(),
+            task_type: task_type.into(),
+            spec_path: spec_path.into(),
+            cron_expr: Some(expression.into()),
+            interval_secs: None,
+            timezone: Some("UTC".to_string()),
+            misfire_policy: "skip".to_string(),
+            next_run_at: None,
+            last_triggered_at: None,
+            enabled: true,
+            created_at: now,
+        }
+    }
+
+    /// An interval schedule.
+    pub fn interval(
+        schedule_id: impl Into<String>,
+        task_type: impl Into<String>,
+        spec_path: impl Into<String>,
+        every_secs: u64,
+        now: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            schedule_id: schedule_id.into(),
+            task_type: task_type.into(),
+            spec_path: spec_path.into(),
+            cron_expr: None,
+            interval_secs: Some(every_secs),
+            timezone: None,
+            misfire_policy: "skip".to_string(),
+            next_run_at: None,
+            last_triggered_at: None,
+            enabled: true,
+            created_at: now,
+        }
+    }
+
+    /// Sets the misfire policy.
+    pub fn with_misfire(mut self, policy: impl Into<String>) -> Self {
+        self.misfire_policy = policy.into();
+        self
+    }
+}
+
 /// One step of a run, as it actually ran — §43.
 ///
 /// The counterpart to the declared plan: `TaskRecord::plan` says what should happen, this

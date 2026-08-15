@@ -209,6 +209,24 @@ fn the_acceptance_scenario_reaches_verified_success() {
     assert!(evidence.iter().all(|e| e.passed));
 
     // 6. The run and attempt were recorded with config provenance (Article 10).
+    let runs_for_steps = store.runs_for_task(&task_id).unwrap();
+    let steps = store.steps_for_run(runs_for_steps[0].run_id).unwrap();
+    assert!(
+        steps.len() >= 2,
+        "expected an execution step and a verification step, got {steps:?}"
+    );
+    assert_eq!(steps[0].status, "success");
+    assert!(steps[0].description.contains("script.task-score"));
+    assert!(steps[1].description.starts_with("verify"));
+
+    // The verdict is queryable without replaying the ledger.
+    let verifications = store.verifications_for_task(&task_id).unwrap();
+    assert_eq!(verifications.len(), 1, "{verifications:?}");
+    assert!(verifications[0].passed);
+    assert!(verifications[0]
+        .verifier_id
+        .contains("verifier.task-result"));
+
     let runs = store.runs_for_task(&task_id).unwrap();
     assert_eq!(runs.len(), 1);
     assert!(!runs[0].config_hash.is_empty());
@@ -252,6 +270,328 @@ fn the_acceptance_scenario_reaches_verified_success() {
         rebuilt.plan.capability.as_deref(),
         Some("script.task-score"),
         "the declared plan must survive a rebuild, or a replayed task would run unverified"
+    );
+}
+
+#[test]
+fn a_declared_artifact_is_recorded_with_its_digest() {
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    // The capability writes a file and declares it. §44: an artifact is what the work
+    // produced, and the index must point at bytes that exist.
+    write_capability(
+        &dir,
+        "script.produces",
+        "import json\n\
+         open('report.md', 'w').write('# digest\\n')\n\
+         print(json.dumps({\"ok\": True, \"artifacts\": [{\"path\": \"report.md\", \"type\": \"report\"}]}))\n",
+        "",
+    );
+    let mut store = store(&dir);
+    let clock = SystemClock;
+    let task_id = enqueue(
+        &mut store,
+        &clock,
+        "artifact.task",
+        QualitySpec::mechanical(),
+        Some(PrecisionClass::P0),
+        TaskPlan {
+            capability: Some("script.produces".into()),
+            ..TaskPlan::empty()
+        },
+    );
+
+    let worker = Worker::new(fixture_config(&dir), clock).unwrap();
+    let result = worker.run_once(&mut store).unwrap().unwrap();
+    assert_eq!(result.verdict, Verdict::Verified, "{}", result.summary());
+
+    let artifacts = store.artifacts_for_task(&task_id).unwrap();
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].artifact_type, "report");
+    assert!(artifacts[0].path.ends_with("report.md"));
+
+    // The digest must be of the bytes that are actually there. Comparing against a
+    // hard-coded length or hash would only test the test's idea of the file — and line-ending
+    // translation makes that idea platform-dependent.
+    let bytes = std::fs::read(dir.path().join("report.md")).unwrap();
+    assert_eq!(artifacts[0].size_bytes, bytes.len() as u64);
+    assert_eq!(
+        artifacts[0].sha256,
+        {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(&bytes))
+        },
+        "the recorded digest must match the file on disk"
+    );
+}
+
+#[test]
+fn an_artifact_that_does_not_exist_is_not_indexed() {
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    write_capability(
+        &dir,
+        "script.lies",
+        "import json\nprint(json.dumps({\"artifacts\": [{\"path\": \"never-written.md\"}]}))\n",
+        "",
+    );
+    let mut store = store(&dir);
+    let clock = SystemClock;
+    let task_id = enqueue(
+        &mut store,
+        &clock,
+        "artifact.missing",
+        QualitySpec::mechanical(),
+        Some(PrecisionClass::P0),
+        TaskPlan {
+            capability: Some("script.lies".into()),
+            ..TaskPlan::empty()
+        },
+    );
+
+    let worker = Worker::new(fixture_config(&dir), clock).unwrap();
+    worker.run_once(&mut store).unwrap().unwrap();
+
+    // An index entry pointing at nothing would be worse than no entry: it would look like
+    // evidence.
+    assert!(store.artifacts_for_task(&task_id).unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Agent runtimes
+// ---------------------------------------------------------------------------
+
+/// Writes an agent capability whose runtime is an agent CLI, with a prompt template.
+fn write_agent_capability(dir: &TempDir, id: &str, runtime: &str, prompt_body: &str) {
+    let caps = dir.path().join("capabilities");
+    std::fs::create_dir_all(caps.join("prompts")).unwrap();
+    std::fs::write(caps.join("prompts").join(format!("{id}.md")), prompt_body).unwrap();
+    std::fs::write(
+        caps.join(format!("{id}.yaml")),
+        format!(
+            "id: {id}\nversion: 1\ntype: agent\ndescription: fixture\n\
+             execution:\n  kind: agent\n  runtime: {runtime}\n  entrypoint:\n    script: prompts/{id}.md\n\
+             quality:\n  deterministic: false\nrisk:\n  side_effect: false\n\
+             platform:\n  windows: true\n  linux: true\ntimeout_seconds: 60\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_agent_cli_capability_executes_through_the_configured_tool() {
+    // The agent path end to end, with a Python wrapper standing in for the real CLI. That is
+    // exactly what PEARL_CURSOR_CMD is for: whatever is runnable can back the runtime, which
+    // is also how this becomes testable without a network or a paid account.
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    write_agent_capability(
+        &dir,
+        "agent.summarise",
+        "cursor",
+        "Summarise task {{task_id}} of type {{task_type}}.",
+    );
+
+    // The wrapper echoes the prompt back as JSON, so the test can prove the rendered prompt
+    // reached the tool.
+    let wrapper = dir.path().join("fake_agent.py");
+    std::fs::write(
+        &wrapper,
+        "import json, sys\n\
+         prompt = sys.argv[sys.argv.index('-p') + 1] if '-p' in sys.argv else ''\n\
+         print(json.dumps({\"summary\": prompt, \"highlights\": [\"one\"], \"sources\": [\"task_id\"]}))\n",
+    )
+    .unwrap();
+    let launcher = dir.path().join(if cfg!(windows) {
+        "agent.cmd"
+    } else {
+        "agent.sh"
+    });
+    let python = pearl_runtime::programs::python();
+    if cfg!(windows) {
+        std::fs::write(
+            &launcher,
+            format!("@echo off\r\n{python} \"{}\" %*\r\n", wrapper.display()),
+        )
+        .unwrap();
+    } else {
+        std::fs::write(
+            &launcher,
+            format!("#!/bin/sh\n{python} \"{}\" \"$@\"\n", wrapper.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    std::env::set_var("PEARL_CURSOR_CMD", launcher.to_string_lossy().to_string());
+
+    let mut store = store(&dir);
+    let clock = SystemClock;
+    let task_id = enqueue(
+        &mut store,
+        &clock,
+        "agent.task",
+        // Best effort: exactness would demand a verifier, which is a different test.
+        QualitySpec::best_effort(),
+        Some(PrecisionClass::P3),
+        TaskPlan {
+            capability: Some("agent.summarise".into()),
+            assurance: vec![AssuranceStep {
+                input: Some(serde_json::json!({
+                    "require_keys": ["summary", "highlights", "sources"],
+                    "types": { "highlights": "array", "sources": "array" }
+                })),
+                ..AssuranceStep::script(
+                    workspace_root()
+                        .join("capabilities/verifiers/verify_task_result.py")
+                        .to_string_lossy(),
+                )
+            }],
+            ..TaskPlan::empty()
+        },
+    );
+
+    let worker = Worker::new(fixture_config(&dir), clock).unwrap();
+    let result = worker.run_once(&mut store).unwrap();
+    std::env::remove_var("PEARL_CURSOR_CMD");
+    let result = result.expect("a task was queued");
+
+    assert_eq!(result.verdict, Verdict::Verified, "{}", result.summary());
+    let output = result.structured_output.expect("the agent emitted JSON");
+    // The prompt placeholders were rendered from the task before the tool saw them.
+    assert_eq!(
+        output["summary"],
+        "Summarise task agent.task of type fixture."
+    );
+
+    // An agent execution is recorded as such: Article 1 makes the distinction the most
+    // important fact about a run, and SS 71 measures the ratio.
+    let events: Vec<String> = store
+        .ledger()
+        .read_task(&task_id)
+        .unwrap()
+        .iter()
+        .map(|e| e.event_type().to_string())
+        .collect();
+    assert!(events.iter().any(|e| e == "agent.started"), "{events:?}");
+    assert!(events.iter().any(|e| e == "agent.completed"), "{events:?}");
+    assert!(
+        !events.iter().any(|e| e == "script.started"),
+        "an agent run must not be recorded as a script run: {events:?}"
+    );
+}
+
+#[test]
+fn an_api_capability_with_no_credential_is_refused_before_any_request() {
+    // The property that matters: an unconfigured provider costs nothing and says so.
+    let dir = TempDir::new().unwrap();
+    write_agent_capability(&dir, "agent.groq", "groq", "Summarise {{task_id}}.");
+
+    let saved_key = std::env::var("GROQ_API_KEY").ok();
+    let saved_model = std::env::var("GROQ_MODEL").ok();
+    std::env::remove_var("GROQ_API_KEY");
+    // A model is configured, so the credential is unambiguously the missing piece. Without
+    // this the refusal would name GROQ_MODEL and the test would be about the wrong thing.
+    std::env::set_var("GROQ_MODEL", "llama-3.3-70b-versatile");
+
+    let mut store = store(&dir);
+    let clock = SystemClock;
+    let task_id = enqueue(
+        &mut store,
+        &clock,
+        "api.unconfigured",
+        QualitySpec::best_effort(),
+        Some(PrecisionClass::P3),
+        TaskPlan {
+            capability: Some("agent.groq".into()),
+            ..TaskPlan::empty()
+        },
+    );
+
+    let worker = Worker::new(fixture_config(&dir), clock).unwrap();
+    let result = worker.run_once(&mut store).unwrap().unwrap();
+    match saved_key {
+        Some(key) => std::env::set_var("GROQ_API_KEY", key),
+        None => std::env::remove_var("GROQ_API_KEY"),
+    }
+    match saved_model {
+        Some(model) => std::env::set_var("GROQ_MODEL", model),
+        None => std::env::remove_var("GROQ_MODEL"),
+    }
+
+    // Refused rather than failed: nothing ran, and no retry will conjure a credential.
+    assert!(
+        matches!(result.verdict, Verdict::Refused { .. }),
+        "got {}",
+        result.summary()
+    );
+    assert!(
+        result.verdict.reason().unwrap().contains("GROQ_API_KEY"),
+        "the refusal must name what to configure: {}",
+        result.summary()
+    );
+    assert!(
+        store.runs_for_task(&task_id).unwrap().is_empty(),
+        "a refused task opens no run"
+    );
+}
+
+#[test]
+fn an_unnamed_task_can_reach_an_agent_capability_by_task_type() {
+    // Article 1 permits an agent only when no mechanical capability exists. When that holds,
+    // the agent must actually be reachable, or a correctly configured registry would be
+    // unusable except by tasks naming capabilities explicitly.
+    let dir = TempDir::new().unwrap();
+    write_agent_capability(&dir, "agent.research", "groq", "Research {{task_id}}.");
+
+    let saved = std::env::var("GROQ_API_KEY").ok();
+    std::env::remove_var("GROQ_API_KEY");
+
+    let mut store = store(&dir);
+    let clock = SystemClock;
+    let task_id = TaskId::parse("routed.research").unwrap();
+    store
+        .create_task(
+            TaskSubmission::new(
+                task_id.clone(),
+                // Matches `agent.research` by the substring rule.
+                "research",
+                Some(PrecisionClass::P3),
+                QualitySpec::best_effort(),
+            ),
+            clock.now(),
+        )
+        .unwrap();
+    for state in [TaskState::Planning, TaskState::Planned, TaskState::Ready] {
+        store
+            .transition(&task_id, state, None, None, clock.now())
+            .unwrap();
+    }
+
+    let worker = Worker::new(fixture_config(&dir), clock).unwrap();
+    let result = worker.run_once(&mut store).unwrap().unwrap();
+    if let Some(key) = saved {
+        std::env::set_var("GROQ_API_KEY", key);
+    }
+
+    // It got as far as needing a credential, which proves routing found the agent.
+    assert_eq!(
+        result.capability_id,
+        "agent.research",
+        "{}",
+        result.summary()
     );
 }
 

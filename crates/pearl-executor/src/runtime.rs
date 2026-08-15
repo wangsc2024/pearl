@@ -220,13 +220,7 @@ mod tests {
     }
 
     fn step(id: &str, capability: &str, timeout: Duration) -> PlanStep {
-        PlanStep {
-            id: id.to_string(),
-            capability: capability.to_string(),
-            depends_on: Vec::new(),
-            precision_class: PrecisionClass::P0,
-            timeout,
-        }
+        PlanStep::new(id, capability, PrecisionClass::P0, timeout)
     }
 
     #[test]

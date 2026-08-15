@@ -400,8 +400,15 @@ platform:
     assert_eq!(json["passed"], false);
     assert_eq!(json["inspected"], 1);
     assert_eq!(json["violations"], 1);
-    assert_eq!(json["findings"][0]["article"], 9);
-    assert_eq!(json["findings"][0]["check"], "check_has_timeout");
+    // Located by content rather than by index: findings are sorted by article, so asserting on
+    // position would break every time a lower-numbered check is added.
+    let findings = json["findings"].as_array().unwrap();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f["article"] == 9 && f["check"] == "check_has_timeout"),
+        "expected the Article 9 timeout violation, got {findings:?}"
+    );
 }
 
 #[test]
@@ -446,4 +453,343 @@ fn malformed_spec_is_rejected_before_touching_the_database() {
     let output = run(&db, &["task", "submit", spec.to_str().unwrap()]);
     assert_eq!(code(&output), 1);
     assert!(stderr(&output).contains("parse"));
+}
+
+// ---------------------------------------------------------------------------
+// script run, verify, workflow — §59
+// ---------------------------------------------------------------------------
+
+/// The repository's own directories, so these tests exercise what ships.
+fn repo(sub: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(sub)
+}
+
+fn python_available() -> bool {
+    Command::new("python3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+        || Command::new("python")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
+#[test]
+fn script_run_executes_the_capability_for_real() {
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+
+    let (output, json) = run_json(
+        &db,
+        &[
+            "script",
+            "run",
+            "script.task-score",
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+            "--input",
+            r#"{"priority":4,"time_proximity":"overdue"}"#,
+        ],
+    );
+
+    // Really executed: the capability's own output is present, not a "would_execute" placeholder.
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(json["capability_id"], "script.task-score");
+    assert!(
+        json["output"]["score"].is_number(),
+        "expected the script's own JSON output, got {json}"
+    );
+}
+
+#[test]
+fn script_run_reports_a_failing_capability_through_its_exit_code() {
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+
+    // Out-of-domain input: the script exits 2, and a shell must be able to see that.
+    let output = run(
+        &db,
+        &[
+            "script",
+            "run",
+            "script.task-score",
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+            "--input",
+            r#"{"priority":99}"#,
+        ],
+    );
+    assert_ne!(code(&output), 0, "stdout: {}", stdout(&output));
+}
+
+#[test]
+fn script_run_on_an_unknown_capability_fails_without_running_anything() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let output = run(
+        &db,
+        &[
+            "script",
+            "run",
+            "script.does-not-exist",
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&output), 1);
+    assert!(stderr(&output).contains("script.does-not-exist"));
+}
+
+#[test]
+fn verify_run_validates_a_document_against_a_real_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+
+    let (output, json) = run_json(
+        &db,
+        &[
+            "verify",
+            "run",
+            "--schema",
+            "verification-result-v1",
+            "--schemas-path",
+            repo("schemas").to_str().unwrap(),
+            "--input",
+            r#"{"status":"pass","checks":[{"id":"c","status":"pass"}]}"#,
+        ],
+    );
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(json["passed"], true);
+}
+
+#[test]
+fn verify_run_rejects_a_document_that_violates_the_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+
+    let output = run(
+        &db,
+        &[
+            "verify",
+            "run",
+            "--schema",
+            "verification-result-v1",
+            "--schemas-path",
+            repo("schemas").to_str().unwrap(),
+            // `status` is constrained by the schema.
+            "--input",
+            r#"{"status":"probably-fine","checks":[]}"#,
+        ],
+    );
+    // Exit 1: the check ran and rejected the document. That is a verdict.
+    assert_eq!(code(&output), 1, "stdout: {}", stdout(&output));
+}
+
+#[test]
+fn verify_run_distinguishes_a_check_that_could_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+
+    let output = run(
+        &db,
+        &[
+            "verify",
+            "run",
+            "--schema",
+            "no-such-schema-v9",
+            "--schemas-path",
+            repo("schemas").to_str().unwrap(),
+            "--input",
+            "{}",
+        ],
+    );
+    // Exit 2, not 1: nothing was verified, and a caller must be able to tell the difference
+    // between "rejected" and "no verdict" (Article 2).
+    assert_eq!(code(&output), 2, "stdout: {}", stdout(&output));
+}
+
+#[test]
+fn verify_run_needs_something_to_inspect() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let output = run(&db, &["verify", "run", "--schema", "evidence-v1"]);
+    assert_eq!(code(&output), 1);
+    assert!(stderr(&output).contains("--input"));
+}
+
+#[test]
+fn verify_task_reports_that_nothing_has_been_verified() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let spec = spec_file(dir.path(), "task.yaml", MECHANICAL_SPEC);
+    run(&db, &["task", "submit", spec.to_str().unwrap()]);
+
+    let output = run(&db, &["verify", "task", "daily.digest"]);
+    // Silence is not a pass: an unverified task exits non-zero and says so.
+    assert_eq!(code(&output), 1);
+    assert!(
+        stdout(&output).contains("no verification"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn workflow_validate_compiles_the_shipped_example() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let workflow = repo("capabilities/workflows/example.score-twice.yaml");
+
+    let (output, json) = run_json(
+        &db,
+        &[
+            "workflow",
+            "validate",
+            workflow.to_str().unwrap(),
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(json["status"], "valid");
+    // Ordering is what compilation establishes, so it is what the output reports.
+    assert_eq!(json["execution_order"][0], "score");
+    assert_eq!(json["execution_order"][1], "score-again");
+}
+
+#[test]
+fn workflow_validate_reports_every_problem_it_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    // A step demanding exactness with no verify step depending on it (§30), and an unknown
+    // capability. Both must be reported, not just the first.
+    let workflow = dir.path().join("bad.yaml");
+    std::fs::write(
+        &workflow,
+        "name: bad\nsteps:\n  - id: a\n    capability: script.nope\n    step_type: run\n    timeout_secs: 5\n    exactness_required: true\n",
+    )
+    .unwrap();
+
+    let (output, json) = run_json(
+        &db,
+        &[
+            "workflow",
+            "validate",
+            workflow.to_str().unwrap(),
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&output), 1);
+    let problems = json["problems"].as_array().unwrap();
+    assert!(
+        problems.len() >= 2,
+        "expected both problems to be reported, got {problems:?}"
+    );
+}
+
+#[test]
+fn workflow_run_executes_the_steps_and_records_them() {
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let workflow = repo("capabilities/workflows/example.score-twice.yaml");
+
+    let (output, json) = run_json(
+        &db,
+        &[
+            "workflow",
+            "run",
+            workflow.to_str().unwrap(),
+            "--task-id",
+            "wf.test",
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+        ],
+    );
+
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(json["success"], true);
+    assert_eq!(json["steps"].as_array().unwrap().len(), 2);
+
+    // A workflow run is a durable task, not a detached script: it has a run, and its outcome
+    // is UNVERIFIED rather than success, because no assurance was declared (Article 2).
+    let (_, task) = run_json(&db, &["task", "inspect", "wf.test"]);
+    assert_eq!(task["task"]["state"], "unverified");
+}
+
+#[test]
+fn workflow_run_refuses_to_run_a_plan_that_did_not_compile() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let workflow = dir.path().join("bad.yaml");
+    std::fs::write(
+        &workflow,
+        "name: bad\nsteps:\n  - id: a\n    capability: script.nope\n    step_type: run\n    timeout_secs: 5\n",
+    )
+    .unwrap();
+
+    let output = run(
+        &db,
+        &[
+            "workflow",
+            "run",
+            workflow.to_str().unwrap(),
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+        ],
+    );
+    // Exit 2: compilation is a gate (§30), so nothing ran.
+    assert_eq!(code(&output), 2, "stdout: {}", stdout(&output));
+    assert!(stderr(&output).contains("nothing was run"));
+}
+
+#[test]
+fn a_completed_workflow_task_cannot_be_run_again_by_accident() {
+    if !python_available() {
+        eprintln!("skipping: no Python interpreter");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let workflow = repo("capabilities/workflows/example.score-twice.yaml");
+    let capabilities = repo("capabilities");
+    let args = [
+        "workflow",
+        "run",
+        workflow.to_str().unwrap(),
+        "--task-id",
+        "wf.once",
+        "--capabilities-path",
+        capabilities.to_str().unwrap(),
+    ];
+
+    assert_eq!(code(&run(&db, &args)), 0);
+
+    // Second attempt on the same id: the state machine forbids it, and the message says what
+    // to do instead rather than surfacing "not claimable".
+    let output = run(&db, &args);
+    assert_eq!(code(&output), 1);
+    assert!(
+        stderr(&output).contains("new --task-id"),
+        "got: {}",
+        stderr(&output)
+    );
 }
