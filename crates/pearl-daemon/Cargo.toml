@@ -1,0 +1,15 @@
+[package]
+name = "pearl-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PEARL daemon: long-running governance and scheduling process."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-governance.workspace = true
+pearl-scheduler.workspace = true
+chrono.workspace = true
+tracing.workspace = true

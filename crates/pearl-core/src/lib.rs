@@ -21,6 +21,7 @@ pub mod evidence;
 pub mod idempotency;
 pub mod ids;
 pub mod precision;
+pub mod redactor;
 pub mod task_state;
 
 pub use clock::{Clock, SharedClock, SystemClock, TestClock};
@@ -33,6 +34,7 @@ pub use ids::{
     AttemptId, CheckpointId, EventId, InvalidTaskId, LeaseId, RunId, TaskId, TraceId, WorkerId,
 };
 pub use precision::{ExactnessGate, PrecisionClass, QualitySpec};
+pub use redactor::SecretRedactor;
 pub use task_state::{TaskState, TransitionError};
 
 /// Event ledger schema version. Bumped when the event vocabulary changes shape;

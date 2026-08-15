@@ -65,6 +65,15 @@ enum Command {
     /// Constitution gate.
     #[command(subcommand)]
     Constitution(ConstitutionCommand),
+    /// Capability registry operations.
+    #[command(subcommand)]
+    Capability(CapabilityCommand),
+    /// Script execution operations.
+    #[command(subcommand)]
+    Script(ScriptCommand),
+    /// Workflow operations.
+    #[command(subcommand)]
+    Workflow(WorkflowCommand),
     /// Report kernel health.
     Doctor,
 }
@@ -89,6 +98,8 @@ enum TaskCommand {
         #[arg(long, default_value = "cancelled by operator")]
         reason: String,
     },
+    /// Retry a failed or cancelled task.
+    Retry { task_id: String },
 }
 
 #[derive(Subcommand)]
@@ -131,6 +142,48 @@ enum ConstitutionCommand {
         /// Directory containing manifests, or a single manifest file.
         #[arg(default_value = "capabilities")]
         path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum CapabilityCommand {
+    /// List all registered capabilities.
+    List {
+        /// Directory containing capability manifests.
+        #[arg(long, default_value = "capabilities")]
+        path: PathBuf,
+    },
+    /// Inspect a specific capability by id.
+    Inspect {
+        /// The capability id to inspect.
+        id: String,
+        /// Directory containing capability manifests.
+        #[arg(long, default_value = "capabilities")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScriptCommand {
+    /// Execute a script by capability id.
+    Run {
+        /// The capability id to execute.
+        id: String,
+        /// Optional JSON input payload.
+        #[arg(long)]
+        input: Option<String>,
+        /// Directory containing capability manifests.
+        #[arg(long, default_value = "capabilities")]
+        capabilities_path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommand {
+    /// Validate a workflow definition file.
+    Validate {
+        /// Path to the workflow YAML file.
+        file: PathBuf,
     },
 }
 
@@ -190,6 +243,9 @@ fn dispatch(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Queue(cmd) => queue(cli, cmd),
         Command::Lease(cmd) => lease(cli, cmd),
         Command::Constitution(cmd) => constitution(cli, cmd),
+        Command::Capability(cmd) => capability(cli, cmd),
+        Command::Script(cmd) => script(cli, cmd),
+        Command::Workflow(cmd) => workflow(cli, cmd),
         Command::Doctor => doctor(cli),
     }
 }
@@ -320,6 +376,42 @@ fn task(cli: &Cli, cmd: &TaskCommand) -> Result<u8, Box<dyn std::error::Error>> 
                 println!("{}", serde_json::to_string_pretty(&record)?);
             } else {
                 println!("cancelled {}", record.task_id);
+            }
+            Ok(exit::OK)
+        }
+
+        TaskCommand::Retry { task_id } => {
+            let mut store = StateStore::open(&cli.db)?;
+            let id = TaskId::parse(task_id.clone())?;
+            let task = store
+                .get_task(&id)?
+                .ok_or_else(|| format!("task '{task_id}' not found"))?;
+
+            // Only failed, cancelled, or blocked tasks can be retried.
+            let retriable = matches!(
+                task.state,
+                TaskState::Failed | TaskState::Cancelled | TaskState::Blocked
+            );
+            if !retriable {
+                eprintln!(
+                    "task '{}' is in state '{}' which cannot be retried",
+                    task_id,
+                    task.state.as_str()
+                );
+                return Ok(exit::ERROR);
+            }
+
+            let record = store.transition(
+                &id,
+                TaskState::Ready,
+                Some("retried by operator".to_string()),
+                None,
+                SystemClock.now(),
+            )?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&record)?);
+            } else {
+                println!("retried {} -> state={}", record.task_id, record.state);
             }
             Ok(exit::OK)
         }
@@ -610,6 +702,192 @@ fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn capability(cli: &Cli, cmd: &CapabilityCommand) -> Result<u8, Box<dyn std::error::Error>> {
+    match cmd {
+        CapabilityCommand::List { path } => {
+            if !path.exists() {
+                if cli.json {
+                    println!("[]");
+                } else {
+                    println!("no capabilities directory found at '{}'", path.display());
+                }
+                return Ok(exit::OK);
+            }
+            let manifests = load_manifests(path)?;
+            if cli.json {
+                let items: Vec<_> = manifests
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.id,
+                            "version": m.version,
+                            "type": m.capability_type.as_str(),
+                            "runtime": m.execution.runtime.as_str(),
+                            "deterministic": m.quality.deterministic,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if manifests.is_empty() {
+                println!("no capabilities registered");
+            } else {
+                println!(
+                    "{:<30} {:<10} {:<10} DETERMINISTIC",
+                    "ID", "TYPE", "RUNTIME"
+                );
+                for m in &manifests {
+                    println!(
+                        "{:<30} {:<10} {:<10} {}",
+                        m.id,
+                        m.capability_type.as_str(),
+                        m.execution.runtime.as_str(),
+                        if m.quality.deterministic { "yes" } else { "no" }
+                    );
+                }
+            }
+            Ok(exit::OK)
+        }
+
+        CapabilityCommand::Inspect { id, path } => {
+            if !path.exists() {
+                eprintln!("capabilities directory '{}' not found", path.display());
+                return Ok(exit::ERROR);
+            }
+            let manifests = load_manifests(path)?;
+            let found = manifests.iter().find(|m| m.id == *id);
+            match found {
+                Some(manifest) => {
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&manifest)?);
+                    } else {
+                        println!("id              {}", manifest.id);
+                        println!("version         {}", manifest.version);
+                        println!("type            {}", manifest.capability_type.as_str());
+                        println!("runtime         {}", manifest.execution.runtime.as_str());
+                        println!("deterministic   {}", manifest.quality.deterministic);
+                        println!("side_effect     {}", manifest.risk.side_effect);
+                        if let Some(timeout) = manifest.timeout_seconds {
+                            println!("timeout         {}s", timeout);
+                        }
+                        if let Some(desc) = &manifest.description {
+                            println!("description     {}", desc);
+                        }
+                    }
+                    Ok(exit::OK)
+                }
+                None => {
+                    eprintln!("capability '{}' not found", id);
+                    Ok(exit::ERROR)
+                }
+            }
+        }
+    }
+}
+
+fn script(cli: &Cli, cmd: &ScriptCommand) -> Result<u8, Box<dyn std::error::Error>> {
+    match cmd {
+        ScriptCommand::Run {
+            id,
+            input,
+            capabilities_path,
+        } => {
+            if !capabilities_path.exists() {
+                eprintln!(
+                    "capabilities directory '{}' not found",
+                    capabilities_path.display()
+                );
+                return Ok(exit::ERROR);
+            }
+            let manifests = load_manifests(capabilities_path)?;
+            let found = manifests.iter().find(|m| m.id == *id);
+            match found {
+                Some(manifest) => {
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "action": "run",
+                                "capability_id": manifest.id,
+                                "runtime": manifest.execution.runtime.as_str(),
+                                "input": input,
+                                "status": "would_execute",
+                                "note": "Script execution requires pearl-runtime adapter; use `pearl-worker` for full execution."
+                            }))?
+                        );
+                    } else {
+                        println!("script run: {}", manifest.id);
+                        println!("  runtime: {}", manifest.execution.runtime.as_str());
+                        if let Some(inp) = input {
+                            println!("  input: {}", inp);
+                        }
+                        println!("  status: dry-run (full execution via pearl-worker)");
+                    }
+                    Ok(exit::OK)
+                }
+                None => {
+                    eprintln!("capability '{}' not found", id);
+                    Ok(exit::ERROR)
+                }
+            }
+        }
+    }
+}
+
+fn workflow(cli: &Cli, cmd: &WorkflowCommand) -> Result<u8, Box<dyn std::error::Error>> {
+    match cmd {
+        WorkflowCommand::Validate { file } => {
+            if !file.exists() {
+                eprintln!("workflow file '{}' not found", file.display());
+                return Ok(exit::ERROR);
+            }
+            let source = std::fs::read_to_string(file)?;
+            // Basic YAML validation: parse as a generic YAML value.
+            let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&source);
+            match parsed {
+                Ok(value) => {
+                    // Check minimal required fields.
+                    let is_valid = value.get("id").is_some() || value.get("name").is_some();
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "file": file.display().to_string(),
+                                "valid_yaml": true,
+                                "has_identifier": is_valid,
+                                "status": if is_valid { "valid" } else { "warning: missing 'id' or 'name' field" },
+                            }))?
+                        );
+                    } else {
+                        println!("workflow: {}", file.display());
+                        println!("  yaml: valid");
+                        if is_valid {
+                            println!("  structure: valid (has id/name)");
+                        } else {
+                            println!("  warning: workflow should have 'id' or 'name' field");
+                        }
+                    }
+                    Ok(exit::OK)
+                }
+                Err(e) => {
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "file": file.display().to_string(),
+                                "valid_yaml": false,
+                                "error": e.to_string(),
+                            }))?
+                        );
+                    } else {
+                        eprintln!("workflow validation failed: {}", e);
+                    }
+                    Ok(exit::ERROR)
+                }
+            }
+        }
+    }
 }
 
 fn doctor(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {

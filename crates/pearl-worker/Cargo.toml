@@ -1,17 +1,19 @@
 [package]
-name = "pearl-assurance"
+name = "pearl-worker"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Assurance Engine: runs verification checks after execution to confirm task success (SS 32)."
+description = "PEARL worker: task execution engine that pulls from the queue and runs scripts."
 
 [dependencies]
 pearl-core.workspace = true
+pearl-runtime.workspace = true
+pearl-state.workspace = true
+pearl-governance.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-serde_yaml.workspace = true

@@ -34,6 +34,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub mod agent_adapters;
+
+pub use agent_adapters::{ClaudeCodeAdapter, CodexAdapter, CursorAdapter, LlamaCppAdapter};
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------

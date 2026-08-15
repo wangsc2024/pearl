@@ -15,5 +15,9 @@
 pub mod records;
 pub mod store;
 
-pub use records::{AttemptRecord, EffectRecord, LeaseRecord, RunRecord, TaskRecord};
+pub use records::{
+    Artifact, AttemptRecord, ConfigRevision, EffectRecord, LeaseRecord, PolicyDecision, RunRecord,
+    RuntimeHealth, TaskRecord, VerificationResult,
+};
+pub use records::{ArtifactData, CacheData, EvidenceData, MemoryData, StateData};
 pub use store::{EffectDecision, ReplaySummary, StateError, StateStore, TaskSubmission};

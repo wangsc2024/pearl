@@ -96,6 +96,135 @@ impl EffectRecord {
     }
 }
 
+// ---------------------------------------------------------------------------
+// §58 — Named data model structs
+// ---------------------------------------------------------------------------
+
+/// A verification result produced by a verifier script.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerificationResult {
+    /// Which task was verified.
+    pub task_id: TaskId,
+    /// Which verifier produced the result.
+    pub verifier_id: String,
+    /// Whether verification passed.
+    pub passed: bool,
+    /// Human-readable detail or structured findings.
+    pub detail: Option<String>,
+    /// When the verification was performed.
+    pub verified_at: DateTime<Utc>,
+}
+
+/// An artifact produced by a task execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Artifact {
+    /// Unique artifact identifier.
+    pub artifact_id: String,
+    /// The task that produced this artifact.
+    pub task_id: TaskId,
+    /// Classification of the artifact (e.g., "binary", "report", "log").
+    pub artifact_type: String,
+    /// Filesystem path where the artifact is stored.
+    pub path: String,
+    /// SHA-256 digest for integrity verification.
+    pub sha256: String,
+    /// Size in bytes.
+    pub size_bytes: u64,
+    /// When the artifact was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// A policy decision recorded by the governance layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PolicyDecision {
+    /// Optional task this decision pertains to.
+    pub task_id: Option<TaskId>,
+    /// The type of decision (e.g., "route", "reject", "escalate").
+    pub decision_type: String,
+    /// The outcome chosen (e.g., "approved", "denied").
+    pub outcome: String,
+    /// Why this decision was made.
+    pub reason: Option<String>,
+    /// When the decision was made.
+    pub decided_at: DateTime<Utc>,
+}
+
+/// A configuration revision snapshot.
+///
+/// Article 10: every run must reference reproducible configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigRevision {
+    /// Unique revision identifier (e.g., git SHA or content-hash).
+    pub revision_id: String,
+    /// SHA-256 of the resolved configuration payload.
+    pub config_hash: String,
+    /// Where this configuration came from (e.g., "file:pearl.toml", "env").
+    pub source: String,
+    /// When this revision was applied.
+    pub applied_at: DateTime<Utc>,
+    /// Serialized configuration payload (JSON).
+    pub payload: Option<String>,
+}
+
+/// A runtime health snapshot for observability.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeHealth {
+    /// Which subsystem reported this health status.
+    pub subsystem: String,
+    /// Current status (e.g., "healthy", "degraded", "failing").
+    pub status: String,
+    /// Additional detail about the health state.
+    pub detail: Option<String>,
+    /// When this health check was recorded.
+    pub recorded_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// §44 — Data category markers: State / Memory / Cache / Artifact / Evidence
+// ---------------------------------------------------------------------------
+
+/// Marker trait for state data: durable task lifecycle projections.
+///
+/// State is derived from the event ledger and can be reconstructed by replay.
+/// Examples: TaskRecord, RunRecord, AttemptRecord, LeaseRecord.
+pub trait StateData: std::fmt::Debug {}
+
+/// Marker trait for memory data: ephemeral runtime working data.
+///
+/// Memory is lost on restart and never persisted to the ledger.
+/// Examples: in-flight request context, correlation accumulators.
+pub trait MemoryData: std::fmt::Debug {}
+
+/// Marker trait for cache data: derivable acceleration structures.
+///
+/// Cache can be discarded and rebuilt without data loss.
+/// Examples: capability registry indexes, schedule next-run-at.
+pub trait CacheData: std::fmt::Debug {}
+
+/// Marker trait for artifact data: immutable outputs produced by tasks.
+///
+/// Artifacts are content-addressed and never mutated after creation.
+/// Examples: build outputs, generated reports, collected data files.
+pub trait ArtifactData: std::fmt::Debug {}
+
+/// Marker trait for evidence data: cryptographic proof of task outcomes.
+///
+/// Evidence is append-only and constitutes the provability record (Article 4).
+/// Examples: test results, diff hashes, verification reports.
+pub trait EvidenceData: std::fmt::Debug {}
+
+// Apply markers to existing types.
+impl StateData for TaskRecord {}
+impl StateData for RunRecord {}
+impl StateData for AttemptRecord {}
+impl StateData for LeaseRecord {}
+impl StateData for EffectRecord {}
+impl ArtifactData for Artifact {}
+impl EvidenceData for VerificationResult {}
+impl StateData for PolicyDecision {}
+impl StateData for ConfigRevision {}
+impl StateData for RuntimeHealth {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,6 +20,9 @@ members = [
     "crates/pearl-executor",
     "crates/pearl-workflow",
     "crates/pearl-policy",
+    "crates/pearl-evidence",
+    "crates/pearl-daemon",
+    "crates/pearl-worker",
     "apps/pearl-cli",
 ]
 
@@ -51,6 +54,9 @@ pearl-assurance = { path = "crates/pearl-assurance" }
 pearl-executor = { path = "crates/pearl-executor" }
 pearl-workflow = { path = "crates/pearl-workflow" }
 pearl-policy = { path = "crates/pearl-policy" }
+pearl-evidence = { path = "crates/pearl-evidence" }
+pearl-daemon = { path = "crates/pearl-daemon" }
+pearl-worker = { path = "crates/pearl-worker" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

@@ -12,8 +12,10 @@
 //! Each check can optionally require evidence (`evidence_required` flag).
 
 mod engine;
+pub mod quality_metrics;
 
 pub use engine::{
     AssuranceCheck, AssuranceEngine, AssuranceError, AssuranceResult, AssuranceSpec, CheckDetail,
     CheckKind, CheckOutcome,
 };
+pub use quality_metrics::QualityMetrics;

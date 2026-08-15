@@ -531,4 +531,94 @@ mod tests {
             other => panic!("expected AgentRoute with P3, got: {other:?}"),
         }
     }
+
+    // -------------------------------------------------------------------
+    // §48/§51: Script/P0 failure MUST NOT fallback to Agent
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn p0_script_failure_does_not_fallback_to_agent() {
+        // Given: a P0 task with no matching mechanical capability
+        // Then: the router REJECTS rather than falling back to AgentRoute
+        let registry = registry_with_manifests(vec![
+            // Only agent capabilities present -- no scripts.
+            agent_manifest("agent.code-review"),
+            agent_manifest("agent.summarize"),
+        ]);
+
+        let router = Router::new();
+        let requirements = TaskRequirements {
+            task_type: "script.deterministic-compute".to_string(),
+            required_capabilities: vec![],
+            quality_spec: QualitySpec::mechanical(), // P0
+            precision_override: Some(PrecisionClass::P0),
+        };
+
+        let decision = router.route(&requirements, &registry);
+
+        // Critical assertion: P0 MUST NOT route to an agent under any circumstance.
+        assert!(
+            !matches!(decision, RoutingDecision::AgentRoute { .. }),
+            "VIOLATION: P0/Script task was routed to an agent! Decision: {decision:?}"
+        );
+        assert!(
+            matches!(decision, RoutingDecision::Rejected { .. }),
+            "P0 task without mechanical capability must be Rejected, got: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn p0_with_unrelated_mechanical_capability_still_rejects() {
+        // Even if mechanical capabilities exist, they must MATCH the task.
+        // An unrelated mechanical capability does not satisfy the routing requirement.
+        let registry = registry_with_manifests(vec![mechanical_manifest(
+            "script.unrelated-tool",
+            Runtime::Rust,
+        )]);
+
+        let router = Router::new();
+        let requirements = TaskRequirements {
+            task_type: "script.specific-compute".to_string(),
+            required_capabilities: vec!["script.specific-compute".to_string()],
+            quality_spec: QualitySpec::mechanical(),
+            precision_override: Some(PrecisionClass::P0),
+        };
+
+        let decision = router.route(&requirements, &registry);
+
+        // Must reject -- no fallback to agent allowed.
+        assert!(
+            !matches!(decision, RoutingDecision::AgentRoute { .. }),
+            "VIOLATION: P0 task fell back to agent! Decision: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_p0_tasks_all_reject_without_agent_fallback() {
+        // Exhaustive: verify the invariant holds for various P0 task types.
+        let registry = registry_with_manifests(vec![]);
+        let router = Router::new();
+
+        let task_types = [
+            "script.cache-validate",
+            "script.score-task",
+            "script.verify-digest",
+            "script.run-tests",
+        ];
+
+        for task_type in &task_types {
+            let requirements = TaskRequirements {
+                task_type: task_type.to_string(),
+                required_capabilities: vec![],
+                quality_spec: QualitySpec::mechanical(),
+                precision_override: Some(PrecisionClass::P0),
+            };
+
+            let decision = router.route(&requirements, &registry);
+            assert!(
+                matches!(decision, RoutingDecision::Rejected { .. }),
+                "P0 task '{task_type}' should be Rejected but got: {decision:?}"
+            );
+        }
+    }
 }

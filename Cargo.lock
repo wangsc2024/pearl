@@ -502,6 +502,7 @@ version = "0.1.0"
 dependencies = [
  "pearl-core",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
 ]
@@ -557,6 +558,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-daemon"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pearl-core",
+ "pearl-governance",
+ "pearl-scheduler",
+ "tracing",
+]
+
+[[package]]
 name = "pearl-events"
 version = "0.1.0"
 dependencies = [
@@ -569,6 +581,20 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "pearl-evidence"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "pearl-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -743,6 +769,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "pearl-worker"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pearl-core",
+ "pearl-governance",
+ "pearl-runtime",
+ "pearl-state",
+ "serde",
+ "serde_json",
  "thiserror",
  "tracing",
 ]

@@ -431,6 +431,40 @@ impl OodaLoop {
     pub fn reset(&mut self) {
         self.recent_observations.clear();
     }
+
+    // -----------------------------------------------------------------------
+    // Daemon mode — §66
+    // -----------------------------------------------------------------------
+
+    /// Run OODA cycles on an interval until the stop signal is set.
+    ///
+    /// `observer_fn` is called each cycle to collect fresh observations.
+    /// The daemon sleeps for `interval` between cycles and checks `stop` before
+    /// each iteration. Returns the results of all completed cycles.
+    pub fn run_daemon<F>(
+        &mut self,
+        interval: std::time::Duration,
+        stop: &std::sync::atomic::AtomicBool,
+        mut observer_fn: F,
+    ) -> Vec<CycleResult>
+    where
+        F: FnMut() -> Vec<Observation>,
+    {
+        let mut results = Vec::new();
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let observations = observer_fn();
+            let now = chrono::Utc::now();
+            let result = self.run_cycle(observations, now);
+            results.push(result);
+
+            // Check stop before sleeping.
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(interval);
+        }
+        results
+    }
 }
 
 /// Convert health state to a numeric severity for comparison.
@@ -669,5 +703,35 @@ mod tests {
         // The rule targets queue but the failing subsystem is runtime,
         // so the rule does not fire and the default alert is produced.
         assert!(matches!(result.decisions[0], Decision::Alert { .. }));
+    }
+
+    #[test]
+    fn daemon_mode_runs_until_stopped() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+
+        let mut ooda = OodaLoop::with_defaults();
+        let mut call_count = 0u32;
+
+        // Stop after 3 cycles.
+        let results = ooda.run_daemon(std::time::Duration::from_millis(1), &stop, || {
+            call_count += 1;
+            if call_count >= 3 {
+                stop_clone.store(true, Ordering::Relaxed);
+            }
+            vec![make_observation(
+                "sys",
+                "ok",
+                ObservationValue::Boolean(true),
+            )]
+        });
+
+        assert_eq!(results.len(), 3);
+        assert!(results
+            .iter()
+            .all(|r| r.orientation.state == HealthState::Healthy));
     }
 }
