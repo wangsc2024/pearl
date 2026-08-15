@@ -1,0 +1,27 @@
+{
+  "project_type": "Greenfield Rust-based framework project (PEARL v2) - starting from empty repo",
+  "language": "Rust (core), with Python/PowerShell script runtimes",
+  "build_system": "Not yet established - will be Cargo workspace",
+  "test_framework": "Not yet established",
+  "build_command": "N/A (greenfield - no build yet)",
+  "test_command": "N/A (greenfield - no tests yet)",
+  "verification_instructions": "Verify files are created with correct content and structure",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "Project is empty. Initialize with spec document and system analysis.",
+  "environment_constraints": "Only /projects/sandbox/pearl/ is writable. All other repos are read-only references. Open internet available.",
+  "contribution_requirements": "None yet - this is the initial project setup.",
+  "key_patterns": "Reference patterns found: daily_agent uses Rust multi-crate workspace with da-core/da-llm/da-runtime separation. AgentFlow-Notify uses speckit.constitution for specification-driven development. deepseek-harness uses TypeScript plugin architecture with event lifecycle (workflow/start, workflow/end, workflow/phase events), capability seams, guard packages (timeout-policy). daily-digest-prompt has 183 YAML configs, 775 tools, 264 skills, 20+ workflows, hooks (pre_bash_guard.py, pre_write_guard.py), YAML single-source-of-truth for scoring/routing/budget.",
+  "relevant_files": [
+    "/projects/sandbox/daily_agent/Cargo.toml",
+    "/projects/sandbox/daily_agent/crates/da-core/src/lib.rs",
+    "/projects/sandbox/AgentFlow-Notify/speckit.constitution",
+    "/projects/sandbox/AgentFlow-Notify/Cargo.toml",
+    "/projects/sandbox/deepseek-harness/packages/workflow/workflow/src/index.ts",
+    "/projects/sandbox/deepseek-harness/packages/guard/timeout-policy/package.json",
+    "/projects/sandbox/deepseek-harness/packages/jobs/jobs/src/index.ts",
+    "/projects/sandbox/daily-digest-prompt/config/scoring.yaml",
+    "/projects/sandbox/daily-digest-prompt/hooks/pre_bash_guard.py",
+    "/projects/sandbox/daily-digest-prompt/workflows/index.yaml"
+  ],
+  "directory_structure": "pearl/ is currently empty (only .git/). Reference repos: daily-digest-prompt (DDP - YAML configs, PowerShell orchestrators, Python tools/hooks/skills), daily_agent (Rust multi-crate workspace), AgentFlow-Notify (Rust with speckit constitution), deepseek-harness (TypeScript monorepo with event lifecycle, workflow engine, guard packages, jobs, plan-mode)"
+}

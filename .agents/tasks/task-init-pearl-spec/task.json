@@ -1,0 +1,7 @@
+{
+  "task_id": "task-init-pearl-spec",
+  "task_description": "Initialize pearl project with system requirements specification (系統開發需求書.md) containing all 73 sections of the PEARL v2 Constitutional Deterministic Agent Framework spec, then perform system analysis by reading reference projects and producing analysis artifacts.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
