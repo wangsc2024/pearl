@@ -1,23 +1,25 @@
 # A minimal declarative workflow, kept in the repository so `pearl workflow validate` and
 # `pearl workflow run` have something real to work on and a regression has somewhere to show.
 #
-# What this demonstrates: dependency ordering, per-step timeouts, and a durable checkpoint
-# after each step, so `--resume` skips work that already completed.
+# What this demonstrates: dependency ordering, per-step timeouts, a durable checkpoint after
+# each step so `--resume` skips work that already completed, and **data flowing from one step
+# into the next** — `check` verifies the document `score` produced rather than re-deriving it.
 #
-# What it deliberately does not demonstrate, because PEARL cannot do it yet: **data does not
-# flow between steps.** Each step receives the task payload, not its predecessor's output.
-# That is why both steps here run the same self-sufficient capability rather than a collect
-# step feeding a verify step — a workflow that appeared to pipe one into the other would be
-# describing something the executor does not do. Step-to-step data flow, and the dynamic
-# Planner-Executor form in SS 40, remain future work.
+# What it deliberately does not demonstrate: the dynamic Planner-Executor form of SS 40. That
+# needs a capability that returns a plan, which is a decision about which capabilities a
+# planner may draw from; see `example.dynamic-plan.yaml` for the shape and why running it is
+# opt-in.
 name: example.score-twice
-description: Scores a task, then scores it again, to show ordering and checkpoints.
+description: Scores a task, then verifies the score it produced.
 
 steps:
   - id: score
     capability: script.task-score
     step_type: run
     timeout_secs: 10
+    # The result is load-bearing: the verify step below is what makes this legal to declare.
+    # Without it, SS 30 refuses to compile the workflow at all.
+    exactness_required: true
 
   - id: score-again
     capability: script.task-score
@@ -26,6 +28,26 @@ steps:
     # and its checkpoint has been committed (SS 41).
     depends_on: [score]
     timeout_secs: 10
+
+  - id: check
+    capability: verifier.task-result
+    step_type: verify
+    depends_on: [score]
+    timeout_secs: 30
+    # `input_from` is the data flow. `verifier.task-result` verifies whatever document it is
+    # given, so the workflow hands it the one `score` printed. Referencing a step that is not
+    # in `depends_on` does not compile: reading a step's output is depending on it, and the
+    # compiler will not let the two claims disagree.
+    input_from:
+      result: steps.score.output
+    # `input` is for constants. Kept in a separate field from `input_from` so nothing has to
+    # inspect a value to decide whether it is a reference — `steps.score.output` is a
+    # perfectly good literal string, and guessing wrong would silently verify the wrong thing.
+    input:
+      require_keys: [score, breakdown, formula]
+      types:
+        score: number
+        breakdown: object
 
 budget:
   max_steps: 8

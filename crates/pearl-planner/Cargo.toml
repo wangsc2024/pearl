@@ -10,6 +10,7 @@ description = "Planner: produces typed execution plans without executing them (S
 [dependencies]
 pearl-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

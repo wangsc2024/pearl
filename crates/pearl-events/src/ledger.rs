@@ -11,44 +11,24 @@
 //! `Connection` would bypass the API but not the trigger.
 
 use crate::event::{EventEnvelope, PearlEvent};
+use crate::migrations::{self, Migration, MigrationError};
 use chrono::{DateTime, Utc};
 use pearl_core::{EventId, TaskId, TraceId, WorkerId};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 
-/// DDL for the ledger. Applied idempotently on open.
-const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS events (
-    id              TEXT PRIMARY KEY,
-    schema_version  INTEGER NOT NULL,
-    occurred_at     TEXT    NOT NULL,
-    trace_id        TEXT    NOT NULL,
-    task_id         TEXT,
-    run_id          TEXT,
-    attempt_id      TEXT,
-    worker_id       TEXT,
-    event_type      TEXT    NOT NULL,
-    payload         TEXT    NOT NULL
-);
+/// The name this schema keeps its version under.
+pub const COMPONENT: &str = "ledger";
 
--- (trace_id, id) serves the common "replay this task's history in order" query.
-CREATE INDEX IF NOT EXISTS idx_events_trace ON events (trace_id, id);
-CREATE INDEX IF NOT EXISTS idx_events_task  ON events (task_id, id);
-CREATE INDEX IF NOT EXISTS idx_events_type  ON events (event_type, id);
-
--- Article 6 / ADR-0001: history is immutable. A correction is a new event.
-CREATE TRIGGER IF NOT EXISTS events_forbid_update
-BEFORE UPDATE ON events
-BEGIN
-    SELECT RAISE(ABORT, 'event ledger is append-only: UPDATE is forbidden');
-END;
-
-CREATE TRIGGER IF NOT EXISTS events_forbid_delete
-BEFORE DELETE ON events
-BEGIN
-    SELECT RAISE(ABORT, 'event ledger is append-only: DELETE is forbidden');
-END;
-"#;
+/// The ledger's schema, one file per version.
+///
+/// Separate from the projections' set because this crate must be usable without them: a tool
+/// that only reads history should not be blocked by a projection migration it does not need.
+pub const MIGRATIONS: &[Migration] = &[Migration::new(
+    1,
+    "events",
+    include_str!("../../../migrations/ledger/0001_events.sql"),
+)];
 
 /// The event ledger.
 pub struct EventLedger {
@@ -67,16 +47,24 @@ impl EventLedger {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self, LedgerError> {
+    fn init(mut conn: Connection) -> Result<Self, LedgerError> {
         // WAL: concurrent readers alongside a single writer, which is exactly the
         // worker-plus-inspector access pattern. NORMAL synchronous is safe under WAL
         // for process crash (the case Article 6 cares about); only OS/power loss can
         // lose the tail, and that is an accepted trade for write throughput.
+        //
+        // Set before migrating, because `journal_mode` cannot be changed inside a
+        // transaction and every migration runs in one.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(SCHEMA)?;
+        migrations::apply(&mut conn, COMPONENT, MIGRATIONS)?;
         Ok(Self { conn })
+    }
+
+    /// The schema version this ledger is at.
+    pub fn schema_version(&self) -> Result<u32, LedgerError> {
+        Ok(migrations::current_version(&self.conn, COMPONENT)?)
     }
 
     /// Borrows the underlying connection.
@@ -258,6 +246,12 @@ pub enum LedgerError {
     Serde(#[from] serde_json::Error),
     #[error("stored event id is not a valid uuid: {0}")]
     BadEventId(#[from] uuid::Error),
+    /// The database could not be brought to the schema this build expects.
+    ///
+    /// Opening anyway is the one thing that must not happen: every read below assumes the
+    /// current shape, so a half-migrated database would be misread rather than rejected.
+    #[error(transparent)]
+    Migration(#[from] MigrationError),
 }
 
 impl LedgerError {

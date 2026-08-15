@@ -1,10 +1,11 @@
 //! Workflow engine: parses YAML workflow definitions and converts them to plans.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use pearl_core::PrecisionClass;
 use pearl_plan_compiler::{CompiledPlan, CompilerConfig, PlanCompiler};
-use pearl_planner::{PlanBudget, PlanStep, Planner};
+use pearl_planner::{PlanBudget, PlanStep, Planner, StepRef, StepRole};
 use serde::{Deserialize, Serialize};
 
 /// The type of a workflow step.
@@ -19,10 +20,18 @@ pub enum StepType {
     Verify,
     /// A side-effecting step.
     Effect,
+    /// A step whose output is a plan to run, not a result to keep — §40's dynamic form.
+    ///
+    /// This is the seam between the two workflow forms the specification requires. Everything
+    /// above is declarative: a human wrote it and a reviewer read it. A `plan` step hands that
+    /// job to something reasoning at runtime, and the plan it returns goes through the same
+    /// compiler as the one in the file — so the dynamic form is constrained by exactly the
+    /// rules the declarative form is, rather than by a second, laxer path.
+    Plan,
 }
 
 /// A single step in a workflow definition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowStep {
     /// Unique id for this step.
     pub id: String,
@@ -46,6 +55,30 @@ pub struct WorkflowStep {
     /// it will not compile.
     #[serde(default)]
     pub exactness_required: bool,
+    /// Constants this step is configured with, merged into its payload.
+    ///
+    /// ```yaml
+    /// input:
+    ///   require_keys: [score, breakdown]
+    ///   types: { score: number }
+    /// ```
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input: BTreeMap<String, serde_json::Value>,
+    /// Payload keys wired to a predecessor's output — the data flow between steps.
+    ///
+    /// ```yaml
+    /// input_from:
+    ///   result: steps.score.output
+    ///   just_the_score: steps.score.output.score
+    /// ```
+    ///
+    /// A second field rather than a convention inside `input`, so that no value has to be
+    /// inspected to learn whether it is a reference. `steps.score.output` as a literal string
+    /// is a legitimate thing to pass a capability; if one map held both, PEARL would have to
+    /// guess which was meant, and the safe-looking guess turns a typo into a step that runs
+    /// on the wrong data and reports success.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_from: BTreeMap<String, StepRef>,
 }
 
 fn default_timeout_secs() -> u64 {
@@ -53,7 +86,7 @@ fn default_timeout_secs() -> u64 {
 }
 
 /// A declarative workflow definition parsed from YAML.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowDef {
     /// Workflow name.
     pub name: String,
@@ -84,7 +117,14 @@ impl WorkflowDef {
                     StepType::Run => PrecisionClass::P0,
                     StepType::Parallel => PrecisionClass::P0,
                     StepType::Verify => PrecisionClass::P0,
+                    // Planning is reasoning, so it is classified as such — which also makes it
+                    // count against the plan's LLM budget rather than being free.
+                    StepType::Plan => PrecisionClass::P1,
                     StepType::Effect => PrecisionClass::P2,
+                };
+                let role = match ws.step_type {
+                    StepType::Plan => StepRole::Plan,
+                    _ => StepRole::Execute,
                 };
                 PlanStep {
                     id: ws.id.clone(),
@@ -93,6 +133,9 @@ impl WorkflowDef {
                     precision_class,
                     timeout: Duration::from_secs(ws.timeout_secs),
                     exactness_required: ws.exactness_required,
+                    input: ws.input.clone(),
+                    input_from: ws.input_from.clone(),
+                    role,
                 }
             })
             .collect()
@@ -222,6 +265,71 @@ steps:
     depends_on: [fetch-news, fetch-weather]
     timeout_secs: 60
 "#;
+
+    const PIPED_WORKFLOW: &str = r#"
+name: piped
+steps:
+  - id: collect
+    capability: script.collect
+    step_type: run
+  - id: summarize
+    capability: script.summarize
+    step_type: run
+    depends_on: [collect]
+    input:
+      style: terse
+    input_from:
+      items: steps.collect.output.items
+      whole: steps.collect.output
+"#;
+
+    #[test]
+    fn wiring_parses_and_reaches_the_plan_step() {
+        let def = WorkflowDef::from_yaml(PIPED_WORKFLOW).unwrap();
+        let summarize = &def.steps[1];
+        assert_eq!(summarize.input["style"], serde_json::json!("terse"));
+        assert_eq!(
+            summarize.input_from["items"],
+            StepRef::field("collect", ["items"])
+        );
+        assert_eq!(summarize.input_from["whole"], StepRef::whole("collect"));
+
+        // And survives the hop into the plan, which is all the executor ever sees.
+        let compiled = WorkflowEngine::new().compile_workflow(&def).unwrap();
+        let step = compiled
+            .execution_order
+            .iter()
+            .find(|s| s.id == "summarize")
+            .unwrap();
+        assert_eq!(step.input_from.len(), 2);
+        assert_eq!(step.input["style"], serde_json::json!("terse"));
+    }
+
+    #[test]
+    fn a_malformed_reference_is_refused_at_parse_time() {
+        // `stdout` is not a readable part of a step, so this cannot be quietly kept as a
+        // literal string to be discovered by a confused capability later.
+        let yaml = PIPED_WORKFLOW.replace("steps.collect.output.items", "steps.collect.stdout");
+        let err = WorkflowDef::from_yaml(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("step output reference"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn a_workflow_reading_a_step_it_does_not_depend_on_does_not_compile() {
+        let yaml = PIPED_WORKFLOW.replace("    depends_on: [collect]\n", "");
+        let def = WorkflowDef::from_yaml(&yaml).unwrap();
+        let err = WorkflowEngine::new().compile_workflow(&def).unwrap_err();
+        match err {
+            WorkflowError::CompileError { errors } => assert!(
+                errors.iter().any(|e| e.contains("depends_on")),
+                "got {errors:?}"
+            ),
+            other => panic!("expected a compile error, got {other}"),
+        }
+    }
 
     #[test]
     fn parses_simple_workflow() {

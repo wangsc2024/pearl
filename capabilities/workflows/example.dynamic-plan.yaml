@@ -1,0 +1,65 @@
+# The dynamic Planner-Executor form — SS 40's second workflow shape.
+#
+# The declarative form is the file next door: a human wrote the steps and a reviewer read them.
+# This form is for work whose shape is only knowable at runtime. A `plan` step's output is not
+# a result, it is a plan:
+#
+#     Planner -> sub-plan -> Compiler -> Execution
+#
+# The third arrow is what makes it safe. SS 31 forbids the Executor from expanding its own
+# tools, ignoring dependencies or adding side effects, and a plan arriving as text from
+# something reasoning is an attempt at exactly that. So it is never executed as given. It goes
+# through the same `PlanCompiler` and the same capability set as a plan written by hand, and
+# only what comes out the far side runs. A sub-plan therefore:
+#
+#   - may only name capabilities the registry already has;
+#   - must verify its own steps that demand exactness;
+#   - is counted against this file's `budget`, so replanning cannot buy more work;
+#   - may nest only as deep as the caller allowed;
+#   - has its step ids namespaced by the planning step (`decide/summarize`), so it can neither
+#     overwrite a parent step's output nor make the executor skip one as already done.
+#
+# NOT RUNNABLE AS SHIPPED, deliberately. Two things are missing and both are decisions rather
+# than code:
+#
+#   1. `agent.propose-plan` does not exist. A planning capability is a prompt that returns
+#      `{"steps": [...]}` and nothing else; which model writes it, and what it is told about
+#      the available capabilities, is an application's choice rather than the framework's.
+#   2. Dynamic planning is off unless a caller enables it. `pearl workflow run` does not pass
+#      `ExecutorConfig::with_dynamic_planning`, so a `plan` step here fails with "dynamic
+#      planning is not enabled for this run" rather than silently being skipped. Enabling it
+#      means naming the capability set a planner may draw from, which is a policy decision and
+#      not something to inherit from the presence of a step.
+#
+# Kept in the repository because the shape is the documentation: this is what a dynamic
+# workflow looks like, and the failure it produces today is the honest one.
+name: example.dynamic-plan
+description: Collects, asks for a plan, then runs whatever plan compiles.
+
+steps:
+  # Ordinary mechanical work, exactly as in the declarative form.
+  - id: collect
+    capability: script.task-score
+    step_type: run
+    timeout_secs: 10
+
+  # The planning step. `step_type: plan` is what says "this output is instructions, not data" —
+  # inferred from nothing, because the difference decides whether text gets executed.
+  - id: decide
+    capability: agent.propose-plan
+    step_type: plan
+    depends_on: [collect]
+    timeout_secs: 120
+    # The planner is told what it is planning about. A sub-plan it produces can also read
+    # `steps.collect.output` directly: steps that have already finished are readable without a
+    # dependency edge, because there is no ordering left to guarantee.
+    input_from:
+      context: steps.collect.output
+
+budget:
+  # The sub-plan's steps come out of this allowance too. Two steps are declared here, so a
+  # proposal may add at most six before it is refused.
+  max_steps: 8
+  # A planning step is reasoning, so it is classified P1 and counted here. A budget of 0 would
+  # refuse this workflow at compile time rather than at run time.
+  max_llm_calls: 2

@@ -666,9 +666,40 @@ fn workflow_validate_compiles_the_shipped_example() {
     );
     assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
     assert_eq!(json["status"], "valid");
-    // Ordering is what compilation establishes, so it is what the output reports.
+    // Ordering is what compilation establishes, so it is what the output reports. `check`
+    // reads `score`'s output, so it must come after it.
     assert_eq!(json["execution_order"][0], "score");
-    assert_eq!(json["execution_order"][1], "score-again");
+    let order: Vec<&str> = json["execution_order"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let score = order.iter().position(|s| *s == "score").unwrap();
+    let check = order.iter().position(|s| *s == "check").unwrap();
+    assert!(score < check, "got {order:?}");
+}
+
+/// The dynamic form ships as a workflow too, and it has to compile: an example that could not
+/// be validated would be documentation of a shape nobody checked.
+#[test]
+fn workflow_validate_compiles_the_shipped_dynamic_example() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pearl.db");
+    let workflow = repo("capabilities/workflows/example.dynamic-plan.yaml");
+
+    let (output, json) = run_json(
+        &db,
+        &[
+            "workflow",
+            "validate",
+            workflow.to_str().unwrap(),
+            "--capabilities-path",
+            repo("capabilities").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(json["status"], "valid");
 }
 
 #[test]
@@ -727,10 +758,34 @@ fn workflow_run_executes_the_steps_and_records_them() {
 
     assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
     assert_eq!(json["success"], true);
-    assert_eq!(json["steps"].as_array().unwrap().len(), 2);
+    let steps = json["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 3);
+
+    // The data flow actually happened: `check` verified the document `score` produced, so its
+    // verdict names the keys that came from upstream rather than reporting an input error.
+    let check = steps
+        .iter()
+        .find(|s| s["step_id"] == "check")
+        .expect("the verify step ran");
+    let verdict = &check["outcome"]["Success"]["structured"];
+    assert_eq!(
+        verdict["status"], "pass",
+        "the verifier saw score's output: {check}"
+    );
+    let ids: Vec<&str> = verdict["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&"require_key:score"),
+        "the workflow's literal input reached the verifier too: {ids:?}"
+    );
 
     // A workflow run is a durable task, not a detached script: it has a run, and its outcome
-    // is UNVERIFIED rather than success, because no assurance was declared (Article 2).
+    // is UNVERIFIED rather than success, because no assurance was declared *for the task*
+    // (Article 2) — a verify step inside the workflow is not the task's own assurance.
     let (_, task) = run_json(&db, &["task", "inspect", "wf.test"]);
     assert_eq!(task["task"]["state"], "unverified");
 }

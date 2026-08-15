@@ -140,6 +140,41 @@ fn a_checkpoint_is_committed_with_its_event_and_survives_a_rebuild() {
     assert_eq!(rebuilt[0].label, "collect");
 }
 
+/// §41 for a workflow whose steps feed each other: the checkpoint has to carry the step's
+/// *output*, not just its name.
+///
+/// A resumed run that restored only the step ids would continue in the right order and hand
+/// the next step nothing — the failure a crash-resume exists to prevent. The payload column is
+/// where the output lives, and `pearl-executor`'s `StepOutput` is what it holds.
+#[test]
+fn a_checkpoint_carries_the_output_a_later_step_will_read() {
+    let mut store = store();
+    let (task_id, _run_id) = running_task(&mut store, "checkpoint.output");
+
+    // Exactly what the workflow runner writes: the serialised output of the step.
+    let produced = serde_json::json!({
+        "text": "{\"items\":[1,2]}",
+        "structured": { "items": [1, 2] }
+    });
+    store
+        .commit_checkpoint(&task_id, "collect", Some(&produced.to_string()), Utc::now())
+        .unwrap();
+
+    let restored: serde_json::Value = store
+        .checkpoints_for_task(&task_id)
+        .unwrap()
+        .first()
+        .and_then(|c| c.payload.as_deref())
+        .map(|p| serde_json::from_str(p).unwrap())
+        .expect("the output was committed with the checkpoint");
+
+    assert_eq!(
+        restored["structured"]["items"],
+        serde_json::json!([1, 2]),
+        "a resumed step can reach its predecessor's output"
+    );
+}
+
 #[test]
 fn the_latest_checkpoint_is_the_resume_point() {
     let mut store = store();

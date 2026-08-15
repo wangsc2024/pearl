@@ -1,13 +1,137 @@
 //! Planner core: produces typed execution plans.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
 use std::time::Duration;
 
 use pearl_core::PrecisionClass;
 use serde::{Deserialize, Serialize};
 
+/// A reference to a predecessor step's output — the wiring that makes a plan a pipeline.
+///
+/// Written as `steps.<step-id>.output`, optionally followed by a path into the JSON that step
+/// printed: `steps.collect.output.items`, `steps.score.output.breakdown.confidence`.
+///
+/// The `steps.…​.output` prefix is mandatory rather than decorative. It is what allows a
+/// mistyped reference to be *rejected* instead of quietly becoming a literal string: there is
+/// exactly one thing a reference can name, so anything else is an error the compiler can
+/// report. Literal values have their own field, so nothing is lost.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct StepRef {
+    /// The step whose output is wanted.
+    pub step: String,
+    /// The path into that step's JSON output. Empty means the whole output.
+    pub path: Vec<String>,
+}
+
+impl StepRef {
+    /// A reference to the whole of a step's output.
+    pub fn whole(step: impl Into<String>) -> Self {
+        Self {
+            step: step.into(),
+            path: Vec::new(),
+        }
+    }
+
+    /// A reference to one path within a step's output.
+    pub fn field(
+        step: impl Into<String>,
+        path: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            step: step.into(),
+            path: path.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Why a reference expression could not be read.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("'{text}' is not a step output reference: {detail}. Expected steps.<step-id>.output or steps.<step-id>.output.<path>")]
+pub struct BadStepRef {
+    pub text: String,
+    pub detail: String,
+}
+
+impl FromStr for StepRef {
+    type Err = BadStepRef;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let bad = |detail: &str| BadStepRef {
+            text: text.to_string(),
+            detail: detail.to_string(),
+        };
+        let parts: Vec<&str> = text.split('.').collect();
+        // steps . <id> . output  — three segments before any path.
+        if parts.len() < 3 {
+            return Err(bad("too few segments"));
+        }
+        if parts[0] != "steps" {
+            return Err(bad("it does not start with 'steps'"));
+        }
+        if parts[2] != "output" {
+            return Err(bad(
+                "the only readable part of a step is its output, so segment three must be 'output'",
+            ));
+        }
+        if parts[1].is_empty() {
+            return Err(bad("the step id is empty"));
+        }
+        if parts[3..].iter().any(|s| s.is_empty()) {
+            return Err(bad("the path has an empty segment"));
+        }
+        Ok(Self {
+            step: parts[1].to_string(),
+            path: parts[3..].iter().map(|s| s.to_string()).collect(),
+        })
+    }
+}
+
+impl fmt::Display for StepRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "steps.{}.output", self.step)?;
+        for segment in &self.path {
+            write!(f, ".{segment}")?;
+        }
+        Ok(())
+    }
+}
+
+impl TryFrom<String> for StepRef {
+    type Error = BadStepRef;
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        text.parse()
+    }
+}
+
+impl From<StepRef> for String {
+    fn from(value: StepRef) -> Self {
+        value.to_string()
+    }
+}
+
+/// What the executor should do with a step's output — §40.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepRole {
+    /// The output is a result. Keep it for the steps that read it.
+    #[default]
+    Execute,
+    /// The output is a plan. Compile it and run it — §40's dynamic form.
+    ///
+    /// A separate role rather than a convention about which capabilities happen to return
+    /// plans, because the difference decides whether output is *data* or *instructions*, and
+    /// nothing should have to infer that from a capability id.
+    Plan,
+}
+
 /// A single step in an execution plan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: `input` holds arbitrary JSON, and `serde_json::Value` is only `PartialEq` because
+/// floats are. Structural comparison is still available where it is wanted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanStep {
     /// Unique identifier for this step within the plan.
     pub id: String,
@@ -28,6 +152,24 @@ pub struct PlanStep {
     /// workflows impossible to compile.
     #[serde(default)]
     pub exactness_required: bool,
+    /// Literal values merged into this step's payload.
+    ///
+    /// What a general capability needs in order to be reusable: `verifier.task-result` checks
+    /// whichever keys it is told to check, so the step says which, rather than the repository
+    /// carrying one bespoke verifier per caller.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input: BTreeMap<String, serde_json::Value>,
+    /// Payload values taken from a predecessor's output — the data flow between steps.
+    ///
+    /// Kept separate from `input` rather than distinguished by the shape of the value. One map
+    /// holding both would have to guess whether the string `steps.collect.output` is a
+    /// reference or a literal, and guessing wrong in the safe direction (treat it as a
+    /// literal) turns a typo into a step that runs on the wrong data and succeeds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_from: BTreeMap<String, StepRef>,
+    /// Whether this step's output is a result or a plan to run — §40.
+    #[serde(default)]
+    pub role: StepRole,
 }
 
 impl PlanStep {
@@ -45,7 +187,21 @@ impl PlanStep {
             precision_class,
             timeout,
             exactness_required: false,
+            input: BTreeMap::new(),
+            input_from: BTreeMap::new(),
+            role: StepRole::Execute,
         }
+    }
+
+    /// Declares that this step produces a plan rather than a result — §40.
+    pub fn proposing_a_plan(mut self) -> Self {
+        self.role = StepRole::Plan;
+        self
+    }
+
+    /// Whether this step's output is a plan to run.
+    pub fn proposes_a_plan(&self) -> bool {
+        self.role == StepRole::Plan
     }
 
     /// Declares that this step's result must be exact, and therefore verified.
@@ -58,6 +214,23 @@ impl PlanStep {
     pub fn after(mut self, deps: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.depends_on = deps.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// Adds a literal payload value.
+    pub fn with_input(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.input.insert(key.into(), value);
+        self
+    }
+
+    /// Wires a payload key to a predecessor's output.
+    pub fn taking(mut self, key: impl Into<String>, reference: StepRef) -> Self {
+        self.input_from.insert(key.into(), reference);
+        self
+    }
+
+    /// The steps whose output this step reads.
+    pub fn referenced_steps(&self) -> impl Iterator<Item = &str> {
+        self.input_from.values().map(|r| r.step.as_str())
     }
 }
 
@@ -80,7 +253,7 @@ impl Default for PlanBudget {
 }
 
 /// A complete execution plan ready for compilation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     /// The ordered steps of the plan.
     pub steps: Vec<PlanStep>,
@@ -219,14 +392,70 @@ mod tests {
     use super::*;
 
     fn step(id: &str, capability: &str, depends_on: &[&str], class: PrecisionClass) -> PlanStep {
-        PlanStep {
-            id: id.to_string(),
-            capability: capability.to_string(),
-            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
-            precision_class: class,
-            timeout: Duration::from_secs(30),
-            exactness_required: false,
+        PlanStep::new(id, capability, class, Duration::from_secs(30)).after(depends_on.to_vec())
+    }
+
+    #[test]
+    fn a_reference_names_a_step_and_a_path_into_its_output() {
+        let whole: StepRef = "steps.collect.output".parse().unwrap();
+        assert_eq!(whole, StepRef::whole("collect"));
+        assert!(whole.path.is_empty());
+
+        let nested: StepRef = "steps.score.output.breakdown.confidence".parse().unwrap();
+        assert_eq!(nested.step, "score");
+        assert_eq!(nested.path, vec!["breakdown", "confidence"]);
+    }
+
+    #[test]
+    fn a_reference_round_trips_through_its_written_form() {
+        for text in [
+            "steps.collect.output",
+            "steps.score.output.score",
+            "steps.a.output.b.c.d",
+        ] {
+            let parsed: StepRef = text.parse().unwrap();
+            assert_eq!(parsed.to_string(), text);
+            // And through serde, which is how it arrives from YAML.
+            let json = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(json, format!("\"{text}\""));
+            assert_eq!(serde_json::from_str::<StepRef>(&json).unwrap(), parsed);
         }
+    }
+
+    /// A mistyped reference must be an error rather than a literal: the alternative is a step
+    /// that runs on the string "step.collect.output" and reports success.
+    #[test]
+    fn anything_that_is_not_a_reference_is_refused() {
+        for text in [
+            "collect",
+            "step.collect.output",
+            "steps.collect",
+            "steps.collect.stdout",
+            "steps..output",
+            "steps.collect.output.",
+            "",
+        ] {
+            assert!(
+                text.parse::<StepRef>().is_err(),
+                "'{text}' should not parse as a reference"
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_knows_which_steps_it_reads() {
+        let s = step(
+            "summarize",
+            "agent.summarize",
+            &["collect"],
+            PrecisionClass::P1,
+        )
+        .taking("items", StepRef::field("collect", ["items"]))
+        .taking("count", StepRef::field("collect", ["count"]))
+        .with_input("style", serde_json::json!("terse"));
+        let read: Vec<&str> = s.referenced_steps().collect();
+        assert_eq!(read, vec!["collect", "collect"]);
+        assert_eq!(s.input["style"], serde_json::json!("terse"));
     }
 
     #[test]
