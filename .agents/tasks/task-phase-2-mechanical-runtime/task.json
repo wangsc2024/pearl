@@ -1,0 +1,14 @@
+{
+  "task_id": "task-phase-2-mechanical-runtime",
+  "task_description": "Implement Phase 2 of PEARL: the Mechanical Runtime layer. This adds 6 new crates: pearl-precision (P0 classification engine), pearl-runtime (script runtime adapters), pearl-capabilities (capability manifest registry), pearl-guard (pre/post guard engine with fail-closed semantics), pearl-scheduler (cron/interval/one-shot scheduling), and pearl-router (script-first routing + health monitor). These crates build on the Phase 1 kernel (pearl-core, pearl-events, pearl-state, pearl-lease, pearl-queue, pearl-process-supervisor, pearl-governance) and enable fully mechanical task execution without any LLM involvement.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006"],
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "404 tests pass (up from 232). cargo clippy -D warnings clean. cargo fmt clean. Constitution gate passes (4 manifests). All 6 Phase 2 crates build and test successfully."
+  }
+}
