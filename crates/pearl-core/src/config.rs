@@ -129,12 +129,17 @@ impl ConfigSource {
         yaml: &str,
     ) -> Result<Self, ConfigError> {
         let origin = origin.into();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(yaml)
-            .map_err(|e| ConfigError::Parse { origin: origin.clone(), detail: e.to_string() })?;
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(yaml).map_err(|e| ConfigError::Parse {
+                origin: origin.clone(),
+                detail: e.to_string(),
+            })?;
 
         let mapping = parsed
             .as_mapping()
-            .ok_or_else(|| ConfigError::NotAMapping { origin: origin.clone() })?;
+            .ok_or_else(|| ConfigError::NotAMapping {
+                origin: origin.clone(),
+            })?;
 
         if !mapping.contains_key(serde_yaml::Value::String("version".into())) {
             return Err(ConfigError::MissingVersion { origin });
@@ -142,15 +147,21 @@ impl ConfigSource {
 
         let mut values = BTreeMap::new();
         for (k, v) in mapping {
-            let key = k
-                .as_str()
-                .ok_or_else(|| ConfigError::NonStringKey { origin: origin.clone() })?;
-            let json = serde_json::to_value(v)
-                .map_err(|e| ConfigError::Parse { origin: origin.clone(), detail: e.to_string() })?;
+            let key = k.as_str().ok_or_else(|| ConfigError::NonStringKey {
+                origin: origin.clone(),
+            })?;
+            let json = serde_json::to_value(v).map_err(|e| ConfigError::Parse {
+                origin: origin.clone(),
+                detail: e.to_string(),
+            })?;
             values.insert(key.to_string(), json);
         }
 
-        Ok(Self { layer, origin, values })
+        Ok(Self {
+            layer,
+            origin,
+            values,
+        })
     }
 }
 
@@ -233,7 +244,12 @@ impl ConfigResolver {
 
         let config_hash = hash_values(&values);
 
-        ResolvedConfig { values, config_revision, config_hash, provenance }
+        ResolvedConfig {
+            values,
+            config_revision,
+            config_hash,
+            provenance,
+        }
     }
 }
 
@@ -287,7 +303,10 @@ mod tests {
             .resolve();
 
         assert_eq!(resolved.get_u64("max_workers"), Some(1));
-        assert_eq!(resolved.origin_of("max_workers"), Some("emergency_override"));
+        assert_eq!(
+            resolved.origin_of("max_workers"),
+            Some("emergency_override")
+        );
     }
 
     #[test]
@@ -334,8 +353,8 @@ mod tests {
 
     #[test]
     fn yaml_without_version_is_rejected() {
-        let err =
-            ConfigSource::from_yaml_str(Layer::System, "sys.yaml", "timeout_seconds: 10").unwrap_err();
+        let err = ConfigSource::from_yaml_str(Layer::System, "sys.yaml", "timeout_seconds: 10")
+            .unwrap_err();
         assert!(matches!(err, ConfigError::MissingVersion { .. }));
     }
 
@@ -360,7 +379,10 @@ mod tests {
             .with_source(ConfigSource::new(Layer::Profile, "normal.yaml").set("k", 2))
             .resolve();
 
-        assert_eq!(resolved.config_revision, "system@builtin+profile@normal.yaml");
+        assert_eq!(
+            resolved.config_revision,
+            "system@builtin+profile@normal.yaml"
+        );
     }
 
     #[test]

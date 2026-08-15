@@ -1,0 +1,19 @@
+# A side-effecting capability. Article 5 requires an idempotency key template so that
+# runtime retry cannot send the same notification twice.
+id: effect.notify
+version: 1
+type: tool
+description: Sends a notification to a channel.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: false
+risk:
+  side_effect: true
+  idempotency:
+    key_template: "ntfy:{channel}:{date}"
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30

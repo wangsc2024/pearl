@@ -6,6 +6,9 @@ members = [
     "crates/pearl-state",
     "crates/pearl-lease",
     "crates/pearl-queue",
+    "crates/pearl-process-supervisor",
+    "crates/pearl-governance",
+    "apps/pearl-cli",
 ]
 
 [workspace.package]

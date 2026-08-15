@@ -1,0 +1,336 @@
+//! Capability manifest parsing — mirrors `schemas/capability-manifest-v1.json`.
+//!
+//! The manifest is the declaration a capability makes about itself. The Constitution
+//! checks in [`crate::checks`] read these declarations, which is why the type is
+//! permissive about *shape* but the checks are strict about *content*: a manifest that
+//! omitted a required field would otherwise fail to parse and never reach the check that
+//! explains what is wrong.
+
+use pearl_core::IdempotencyTemplate;
+use serde::{Deserialize, Serialize};
+
+/// What kind of capability this is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityType {
+    Script,
+    Tool,
+    Verifier,
+    Skill,
+    Agent,
+    Workflow,
+    Runtime,
+    Guard,
+}
+
+impl CapabilityType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CapabilityType::Script => "script",
+            CapabilityType::Tool => "tool",
+            CapabilityType::Verifier => "verifier",
+            CapabilityType::Skill => "skill",
+            CapabilityType::Agent => "agent",
+            CapabilityType::Workflow => "workflow",
+            CapabilityType::Runtime => "runtime",
+            CapabilityType::Guard => "guard",
+        }
+    }
+}
+
+/// How a capability is executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionKind {
+    Script,
+    Tool,
+    Agent,
+    Workflow,
+    HumanGate,
+}
+
+impl ExecutionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExecutionKind::Script => "script",
+            ExecutionKind::Tool => "tool",
+            ExecutionKind::Agent => "agent",
+            ExecutionKind::Workflow => "workflow",
+            ExecutionKind::HumanGate => "human_gate",
+        }
+    }
+
+    /// Whether this kind involves an LLM.
+    ///
+    /// Article 1 turns on this distinction: deterministic work must not be routed to
+    /// anything that reasons.
+    pub fn involves_llm(&self) -> bool {
+        matches!(self, ExecutionKind::Agent)
+    }
+}
+
+/// Which runtime executes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Runtime {
+    Rust,
+    Python,
+    Powershell,
+    Shell,
+    ClaudeCode,
+    Codex,
+    Cursor,
+    OpenaiCompatible,
+    LlamaCpp,
+    Native,
+}
+
+impl Runtime {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Runtime::Rust => "rust",
+            Runtime::Python => "python",
+            Runtime::Powershell => "powershell",
+            Runtime::Shell => "shell",
+            Runtime::ClaudeCode => "claude_code",
+            Runtime::Codex => "codex",
+            Runtime::Cursor => "cursor",
+            Runtime::OpenaiCompatible => "openai_compatible",
+            Runtime::LlamaCpp => "llama_cpp",
+            Runtime::Native => "native",
+        }
+    }
+
+    /// Whether this runtime is a mechanical script runtime (§24).
+    pub fn is_mechanical(&self) -> bool {
+        matches!(
+            self,
+            Runtime::Rust
+                | Runtime::Python
+                | Runtime::Powershell
+                | Runtime::Shell
+                | Runtime::Native
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Execution {
+    pub kind: ExecutionKind,
+    pub runtime: Runtime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quality {
+    pub deterministic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Idempotency {
+    pub key_template: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Risk {
+    pub side_effect: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency: Option<Idempotency>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Platform {
+    pub windows: bool,
+    pub linux: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Schemas {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// Guard failure behaviour — Article 7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnError {
+    /// Fail-closed: deny the operation.
+    Deny,
+    /// Fail-open: allow the operation to proceed.
+    Allow,
+}
+
+/// A capability's self-declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityManifest {
+    pub id: String,
+    pub version: u32,
+    #[serde(rename = "type")]
+    pub capability_type: CapabilityType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub execution: Execution,
+    pub quality: Quality,
+    pub risk: Risk,
+    pub platform: Platform,
+    #[serde(default)]
+    pub schemas: Schemas,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<OnError>,
+}
+
+impl CapabilityManifest {
+    /// Parses a manifest from YAML.
+    pub fn from_yaml(yaml: &str) -> Result<Self, ManifestError> {
+        serde_yaml::from_str(yaml).map_err(|e| ManifestError::Parse {
+            detail: e.to_string(),
+        })
+    }
+
+    /// The declared idempotency template, if any.
+    pub fn idempotency_template(&self) -> Option<IdempotencyTemplate> {
+        self.risk
+            .idempotency
+            .as_ref()
+            .map(|i| IdempotencyTemplate::new(&i.key_template))
+    }
+
+    /// Whether the capability runs on at least one platform.
+    ///
+    /// A manifest claiming neither is not "portable", it is unrunnable — almost certainly
+    /// a copy-paste mistake worth catching.
+    pub fn runs_anywhere(&self) -> bool {
+        self.platform.windows || self.platform.linux
+    }
+}
+
+/// Manifest failures.
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestError {
+    #[error("failed to parse capability manifest: {detail}")]
+    Parse { detail: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VERIFIER: &str = r#"
+id: verifier.config-consistency
+version: 3
+type: verifier
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+schemas:
+  input: config-check-input-v1
+  output: verification-result-v1
+timeout_seconds: 60
+"#;
+
+    #[test]
+    fn parses_a_verifier_manifest() {
+        let m = CapabilityManifest::from_yaml(VERIFIER).unwrap();
+        assert_eq!(m.id, "verifier.config-consistency");
+        assert_eq!(m.version, 3);
+        assert_eq!(m.capability_type, CapabilityType::Verifier);
+        assert_eq!(m.execution.kind, ExecutionKind::Script);
+        assert_eq!(m.execution.runtime, Runtime::Python);
+        assert!(m.quality.deterministic);
+        assert!(!m.risk.side_effect);
+        assert_eq!(m.timeout_seconds, Some(60));
+    }
+
+    #[test]
+    fn parses_an_effect_manifest_with_idempotency() {
+        let yaml = r#"
+id: effect.ntfy-send
+version: 1
+type: tool
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: false
+risk:
+  side_effect: true
+  idempotency:
+    key_template: "ntfy:{channel}:{date}"
+platform:
+  windows: true
+  linux: true
+"#;
+        let m = CapabilityManifest::from_yaml(yaml).unwrap();
+        assert!(m.risk.side_effect);
+        let template = m.idempotency_template().unwrap();
+        assert_eq!(template.placeholders(), vec!["channel", "date"]);
+    }
+
+    #[test]
+    fn rejects_malformed_yaml() {
+        assert!(CapabilityManifest::from_yaml("id: [unclosed").is_err());
+    }
+
+    #[test]
+    fn rejects_a_manifest_missing_required_fields() {
+        assert!(CapabilityManifest::from_yaml("id: x\nversion: 1\n").is_err());
+    }
+
+    #[test]
+    fn only_agent_execution_involves_an_llm() {
+        assert!(ExecutionKind::Agent.involves_llm());
+        for k in [
+            ExecutionKind::Script,
+            ExecutionKind::Tool,
+            ExecutionKind::Workflow,
+            ExecutionKind::HumanGate,
+        ] {
+            assert!(!k.involves_llm(), "{k:?} should not involve an LLM");
+        }
+    }
+
+    #[test]
+    fn mechanical_runtimes_are_identified() {
+        for r in [
+            Runtime::Rust,
+            Runtime::Python,
+            Runtime::Powershell,
+            Runtime::Shell,
+        ] {
+            assert!(r.is_mechanical(), "{r:?} should be mechanical");
+        }
+        for r in [
+            Runtime::ClaudeCode,
+            Runtime::Codex,
+            Runtime::OpenaiCompatible,
+        ] {
+            assert!(!r.is_mechanical(), "{r:?} should not be mechanical");
+        }
+    }
+
+    #[test]
+    fn a_manifest_targeting_no_platform_is_detectable() {
+        let yaml = VERIFIER
+            .replace("windows: true", "windows: false")
+            .replace("linux: true", "linux: false");
+        let m = CapabilityManifest::from_yaml(&yaml).unwrap();
+        assert!(!m.runs_anywhere());
+    }
+
+    #[test]
+    fn manifest_round_trips_through_yaml() {
+        let m = CapabilityManifest::from_yaml(VERIFIER).unwrap();
+        let yaml = serde_yaml::to_string(&m).unwrap();
+        assert_eq!(CapabilityManifest::from_yaml(&yaml).unwrap(), m);
+    }
+}

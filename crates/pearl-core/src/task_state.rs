@@ -97,7 +97,10 @@ impl TaskState {
 
     /// Whether this state means a worker currently holds the task.
     pub fn is_active(&self) -> bool {
-        matches!(self, TaskState::Leased | TaskState::Running | TaskState::Verifying)
+        matches!(
+            self,
+            TaskState::Leased | TaskState::Running | TaskState::Verifying
+        )
     }
 
     /// Whether the task is waiting to be picked up.
@@ -139,9 +142,15 @@ impl TaskState {
             return Ok(());
         }
         Err(if self.is_terminal() {
-            TransitionError::FromTerminal { from: *self, to: next }
+            TransitionError::FromTerminal {
+                from: *self,
+                to: next,
+            }
         } else {
-            TransitionError::NotAllowed { from: *self, to: next }
+            TransitionError::NotAllowed {
+                from: *self,
+                to: next,
+            }
         })
     }
 }
@@ -236,7 +245,10 @@ mod tests {
 
     #[test]
     fn work_cannot_start_without_being_claimed() {
-        assert!(!Ready.can_transition_to(Running), "running requires a lease");
+        assert!(
+            !Ready.can_transition_to(Running),
+            "running requires a lease"
+        );
         assert!(Ready.can_transition_to(Leased));
     }
 
@@ -264,7 +276,9 @@ mod tests {
         for s in [Leased, Running, Verifying] {
             assert!(s.is_active(), "{s} should be active");
         }
-        for s in [Created, Planning, Planned, Ready, RetryWait, Blocked, Unverified] {
+        for s in [
+            Created, Planning, Planned, Ready, RetryWait, Blocked, Unverified,
+        ] {
             assert!(!s.is_active(), "{s} should not be active");
         }
     }
@@ -272,7 +286,9 @@ mod tests {
     #[test]
     fn only_ready_is_claimable() {
         assert!(Ready.is_claimable());
-        for s in [Created, Planning, Planned, Leased, Running, RetryWait, Blocked] {
+        for s in [
+            Created, Planning, Planned, Leased, Running, RetryWait, Blocked,
+        ] {
             assert!(!s.is_claimable(), "{s} must not be claimable");
         }
     }
@@ -280,8 +296,20 @@ mod tests {
     #[test]
     fn state_names_round_trip() {
         let all = [
-            Created, Planning, Planned, Ready, Leased, Running, Verifying, VerifiedSuccess,
-            Unverified, RetryWait, Blocked, Failed, Cancelled, Dead,
+            Created,
+            Planning,
+            Planned,
+            Ready,
+            Leased,
+            Running,
+            Verifying,
+            VerifiedSuccess,
+            Unverified,
+            RetryWait,
+            Blocked,
+            Failed,
+            Cancelled,
+            Dead,
         ];
         for state in all {
             assert_eq!(TaskState::parse(state.as_str()), Some(state));
@@ -293,8 +321,20 @@ mod tests {
     fn no_transition_targets_created() {
         // Created is an entry point only; nothing may re-enter it.
         let all = [
-            Created, Planning, Planned, Ready, Leased, Running, Verifying, VerifiedSuccess,
-            Unverified, RetryWait, Blocked, Failed, Cancelled, Dead,
+            Created,
+            Planning,
+            Planned,
+            Ready,
+            Leased,
+            Running,
+            Verifying,
+            VerifiedSuccess,
+            Unverified,
+            RetryWait,
+            Blocked,
+            Failed,
+            Cancelled,
+            Dead,
         ];
         for state in all {
             assert!(

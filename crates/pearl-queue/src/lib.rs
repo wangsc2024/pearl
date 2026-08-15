@@ -44,7 +44,11 @@ impl RetryPolicy {
                 detail: "backoff must be non-negative and max_backoff >= base_backoff".into(),
             });
         }
-        Ok(Self { max_attempts, base_backoff, max_backoff })
+        Ok(Self {
+            max_attempts,
+            base_backoff,
+            max_backoff,
+        })
     }
 
     /// 3 attempts, 30s base, 5min ceiling.
@@ -71,8 +75,7 @@ impl RetryPolicy {
             .base_backoff
             .num_milliseconds()
             .saturating_mul(multiplier);
-        let candidate =
-            TimeDelta::try_milliseconds(scaled).unwrap_or(self.max_backoff);
+        let candidate = TimeDelta::try_milliseconds(scaled).unwrap_or(self.max_backoff);
         candidate.min(self.max_backoff)
     }
 
@@ -97,7 +100,11 @@ pub struct WorkQueue<C: Clock> {
 
 impl<C: Clock + Clone> WorkQueue<C> {
     pub fn new(policy: RetryPolicy, profile: RuntimeProfile, clock: C) -> Self {
-        Self { policy, profile, clock }
+        Self {
+            policy,
+            profile,
+            clock,
+        }
     }
 
     pub fn policy(&self) -> RetryPolicy {
@@ -141,11 +148,11 @@ impl<C: Clock + Clone> WorkQueue<C> {
         for candidate in candidates {
             match leases.claim(store, &candidate.task_id, worker_id) {
                 Ok(lease) => {
-                    let task = store
-                        .get_task(&candidate.task_id)?
-                        .ok_or_else(|| QueueError::TaskVanished {
+                    let task = store.get_task(&candidate.task_id)?.ok_or_else(|| {
+                        QueueError::TaskVanished {
                             task_id: candidate.task_id.to_string(),
-                        })?;
+                        }
+                    })?;
                     return Ok(Some(Claim { task, lease }));
                 }
                 // Lost the race, or the task moved on. Both mean "try the next one".
@@ -171,7 +178,9 @@ impl<C: Clock + Clone> WorkQueue<C> {
         let now = self.clock.now();
         let task = store
             .get_task(task_id)?
-            .ok_or_else(|| QueueError::TaskVanished { task_id: task_id.to_string() })?;
+            .ok_or_else(|| QueueError::TaskVanished {
+                task_id: task_id.to_string(),
+            })?;
 
         if self.policy.permits_attempt(task.attempt_count) {
             let backoff = self.policy.backoff_for(task.attempt_count.max(1));
@@ -182,28 +191,33 @@ impl<C: Clock + Clone> WorkQueue<C> {
                 None,
                 now,
             )?;
-            Ok(FailureVerdict::WillRetry { after: now + backoff, attempt: task.attempt_count + 1 })
+            Ok(FailureVerdict::WillRetry {
+                after: now + backoff,
+                attempt: task.attempt_count + 1,
+            })
         } else {
             // Attempts exhausted. FAILED, not DEAD: the work ran and lost, which is a
             // different diagnosis from a worker vanishing.
             store.transition(
                 task_id,
                 TaskState::Failed,
-                Some(format!("{reason} (exhausted {} attempts)", self.policy.max_attempts)),
+                Some(format!(
+                    "{reason} (exhausted {} attempts)",
+                    self.policy.max_attempts
+                )),
                 None,
                 now,
             )?;
-            Ok(FailureVerdict::DeadLettered { attempts: task.attempt_count })
+            Ok(FailureVerdict::DeadLettered {
+                attempts: task.attempt_count,
+            })
         }
     }
 
     /// Promotes `RETRY_WAIT` tasks whose backoff has elapsed back to `READY`.
     ///
     /// Backoff is judged from `updated_at`, which the transition into `RETRY_WAIT` set.
-    pub fn promote_ready_retries(
-        &self,
-        store: &mut StateStore,
-    ) -> Result<Vec<TaskId>, QueueError> {
+    pub fn promote_ready_retries(&self, store: &mut StateStore) -> Result<Vec<TaskId>, QueueError> {
         let now = self.clock.now();
         let waiting = store.list_by_state(TaskState::RetryWait)?;
         let mut promoted = Vec::new();

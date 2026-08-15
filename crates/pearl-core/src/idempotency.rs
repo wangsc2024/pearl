@@ -122,10 +122,7 @@ impl IdempotencyTemplate {
     /// An unsupplied placeholder is an error rather than being left literal: a key
     /// containing `{run_id}` would silently deduplicate *every* run against every other,
     /// which is the opposite of what Article 5 asks for.
-    pub fn render(
-        &self,
-        bindings: &[(&str, &str)],
-    ) -> Result<IdempotencyKey, IdempotencyKeyError> {
+    pub fn render(&self, bindings: &[(&str, &str)]) -> Result<IdempotencyKey, IdempotencyKeyError> {
         let mut rendered = self.0.clone();
         for (name, value) in bindings {
             rendered = rendered.replace(&format!("{{{name}}}"), value);
@@ -200,7 +197,9 @@ mod tests {
     #[test]
     fn template_renders_with_bindings() {
         let t = IdempotencyTemplate::new("todoist:complete:{task_id}:{run_id}");
-        let key = t.render(&[("task_id", "task_123"), ("run_id", "run_456")]).unwrap();
+        let key = t
+            .render(&[("task_id", "task_123"), ("run_id", "run_456")])
+            .unwrap();
         assert_eq!(key.as_str(), "todoist:complete:task_123:run_456");
     }
 
@@ -208,7 +207,10 @@ mod tests {
     fn unresolved_placeholder_is_an_error_not_a_literal() {
         let t = IdempotencyTemplate::new("todoist:complete:{task_id}:{run_id}");
         let err = t.render(&[("task_id", "task_123")]).unwrap_err();
-        assert_eq!(err, IdempotencyKeyError::UnresolvedPlaceholder("run_id".into()));
+        assert_eq!(
+            err,
+            IdempotencyKeyError::UnresolvedPlaceholder("run_id".into())
+        );
     }
 
     #[test]

@@ -49,7 +49,10 @@ pub enum PearlEvent {
     },
 
     #[serde(rename = "task.completed")]
-    TaskCompleted { task_id: TaskId, final_state: TaskState },
+    TaskCompleted {
+        task_id: TaskId,
+        final_state: TaskState,
+    },
 
     #[serde(rename = "run.started")]
     RunStarted {
@@ -61,10 +64,18 @@ pub enum PearlEvent {
     },
 
     #[serde(rename = "run.ended")]
-    RunEnded { task_id: TaskId, run_id: RunId, outcome: RunOutcome },
+    RunEnded {
+        task_id: TaskId,
+        run_id: RunId,
+        outcome: RunOutcome,
+    },
 
     #[serde(rename = "attempt.started")]
-    AttemptStarted { run_id: RunId, attempt_id: AttemptId, attempt_number: u32 },
+    AttemptStarted {
+        run_id: RunId,
+        attempt_id: AttemptId,
+        attempt_number: u32,
+    },
 
     #[serde(rename = "attempt.ended")]
     AttemptEnded {
@@ -84,46 +95,88 @@ pub enum PearlEvent {
     },
 
     #[serde(rename = "lease.renewed")]
-    LeaseRenewed { lease_id: LeaseId, leased_until: DateTime<Utc> },
+    LeaseRenewed {
+        lease_id: LeaseId,
+        leased_until: DateTime<Utc>,
+    },
 
     /// Emitted by the reaper, not by the dead worker — a crashed worker cannot report
     /// its own death, which is the whole reason leases exist (§34).
     #[serde(rename = "lease.expired")]
-    LeaseExpired { task_id: TaskId, lease_id: LeaseId, worker_id: WorkerId },
+    LeaseExpired {
+        task_id: TaskId,
+        lease_id: LeaseId,
+        worker_id: WorkerId,
+    },
 
     #[serde(rename = "lease.released")]
     LeaseReleased { task_id: TaskId, lease_id: LeaseId },
 
     #[serde(rename = "script.started")]
-    ScriptStarted { capability_id: String, runtime: String },
+    ScriptStarted {
+        capability_id: String,
+        runtime: String,
+    },
 
     #[serde(rename = "script.completed")]
-    ScriptCompleted { capability_id: String, exit_code: i32, duration_ms: u64 },
+    ScriptCompleted {
+        capability_id: String,
+        exit_code: i32,
+        duration_ms: u64,
+    },
 
     #[serde(rename = "verification.started")]
-    VerificationStarted { task_id: TaskId, verifier_id: String },
+    VerificationStarted {
+        task_id: TaskId,
+        verifier_id: String,
+    },
 
     #[serde(rename = "verification.passed")]
-    VerificationPassed { task_id: TaskId, verifier_id: String, check_count: u32 },
+    VerificationPassed {
+        task_id: TaskId,
+        verifier_id: String,
+        check_count: u32,
+    },
 
     #[serde(rename = "verification.failed")]
-    VerificationFailed { task_id: TaskId, verifier_id: String, reason: String },
+    VerificationFailed {
+        task_id: TaskId,
+        verifier_id: String,
+        reason: String,
+    },
 
     #[serde(rename = "effect.requested")]
-    EffectRequested { effect: String, idempotency_key: IdempotencyKey },
+    EffectRequested {
+        effect: String,
+        idempotency_key: IdempotencyKey,
+    },
 
     #[serde(rename = "effect.committed")]
-    EffectCommitted { effect: String, idempotency_key: IdempotencyKey },
+    EffectCommitted {
+        effect: String,
+        idempotency_key: IdempotencyKey,
+    },
 
     /// The retry-safety proof: a second request for the same key did *not* re-run.
     #[serde(rename = "effect.deduplicated")]
-    EffectDeduplicated { effect: String, idempotency_key: IdempotencyKey },
+    EffectDeduplicated {
+        effect: String,
+        idempotency_key: IdempotencyKey,
+    },
 
     #[serde(rename = "checkpoint.committed")]
-    CheckpointCommitted { checkpoint_id: CheckpointId, step_id: String },
+    CheckpointCommitted {
+        checkpoint_id: CheckpointId,
+        step_id: String,
+    },
 
     #[serde(rename = "evidence.stored")]
-    EvidenceStored { task_id: TaskId, evidence_type: String, producer: String, passed: bool },
+    EvidenceStored {
+        task_id: TaskId,
+        evidence_type: String,
+        producer: String,
+        passed: bool,
+    },
 }
 
 impl PearlEvent {
@@ -316,7 +369,10 @@ mod tests {
     fn payload_is_self_describing() {
         // The persisted payload alone must be enough to reconstruct the event, so the
         // ledger never depends on its own event_type column being correct.
-        let event = PearlEvent::TaskPlanned { task_id: task(), step_count: 3 };
+        let event = PearlEvent::TaskPlanned {
+            task_id: task(),
+            step_count: 3,
+        };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "task.planned");
     }
@@ -358,7 +414,10 @@ mod tests {
         let env = EventEnvelope::new(
             TraceId::new(),
             ts(),
-            PearlEvent::TaskPlanned { task_id: task(), step_count: 1 },
+            PearlEvent::TaskPlanned {
+                task_id: task(),
+                step_count: 1,
+            },
         );
         assert_eq!(env.schema_version, EVENT_SCHEMA_VERSION);
     }
@@ -372,7 +431,10 @@ mod tests {
                 EventEnvelope::new(
                     trace,
                     ts(),
-                    PearlEvent::TaskPlanned { task_id: task(), step_count: 1 },
+                    PearlEvent::TaskPlanned {
+                        task_id: task(),
+                        step_count: 1,
+                    },
                 )
                 .id,
             );
@@ -390,7 +452,10 @@ mod tests {
         let env = EventEnvelope::new(
             TraceId::new(),
             ts(),
-            PearlEvent::TaskPlanned { task_id: task(), step_count: 1 },
+            PearlEvent::TaskPlanned {
+                task_id: task(),
+                step_count: 1,
+            },
         );
         let json = serde_json::to_value(&env).unwrap();
         assert!(json.get("attempt_id").is_none());

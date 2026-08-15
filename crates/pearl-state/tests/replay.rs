@@ -52,16 +52,25 @@ fn populate(store: &mut StateStore) {
         )
         .unwrap();
 
-    let run = store.start_run(&one, "system@builtin", "hash1", later(1)).unwrap();
+    let run = store
+        .start_run(&one, "system@builtin", "hash1", later(1))
+        .unwrap();
     let a1 = store.start_attempt(run.run_id, 1, later(2)).unwrap();
     store
-        .end_attempt(a1.attempt_id, RunOutcome::Failure, Some("timeout".into()), later(3))
+        .end_attempt(
+            a1.attempt_id,
+            RunOutcome::Failure,
+            Some("timeout".into()),
+            later(3),
+        )
         .unwrap();
     let a2 = store.start_attempt(run.run_id, 2, later(4)).unwrap();
     store
         .end_attempt(a2.attempt_id, RunOutcome::Success, None, later(5))
         .unwrap();
-    store.end_run(run.run_id, RunOutcome::Success, later(6)).unwrap();
+    store
+        .end_run(run.run_id, RunOutcome::Success, later(6))
+        .unwrap();
 
     for (i, state) in [
         TaskState::Planning,
@@ -79,7 +88,13 @@ fn populate(store: &mut StateStore) {
             .unwrap();
     }
     store
-        .transition(&one, TaskState::VerifiedSuccess, None, Some(&evidence()), later(20))
+        .transition(
+            &one,
+            TaskState::VerifiedSuccess,
+            None,
+            Some(&evidence()),
+            later(20),
+        )
         .unwrap();
 
     // Task 2: blocked by the Exactness Gate, ending in UNVERIFIED.
@@ -134,15 +149,25 @@ fn populate(store: &mut StateStore) {
         )
         .unwrap();
     store
-        .transition(&three, TaskState::Cancelled, Some("operator".into()), None, later(51))
+        .transition(
+            &three,
+            TaskState::Cancelled,
+            Some("operator".into()),
+            None,
+            later(51),
+        )
         .unwrap();
 
     // Effects, including a deduplicated repeat.
     let key = IdempotencyKey::parse("ntfy:digest:2026-08-15").unwrap();
     let trace = store.get_task(&one).unwrap().unwrap().trace_id;
-    store.request_effect("ntfy", &key, trace, later(60)).unwrap();
+    store
+        .request_effect("ntfy", &key, trace, later(60))
+        .unwrap();
     store.commit_effect("ntfy", &key, trace, later(61)).unwrap();
-    store.request_effect("ntfy", &key, trace, later(62)).unwrap();
+    store
+        .request_effect("ntfy", &key, trace, later(62))
+        .unwrap();
 }
 
 #[test]
@@ -304,7 +329,11 @@ fn deduplicated_effect_did_not_create_a_second_row() {
 
     // And the ledger recorded the deduplication as evidence that retry was safe.
     assert_eq!(
-        store.ledger().read_by_type("effect.deduplicated").unwrap().len(),
+        store
+            .ledger()
+            .read_by_type("effect.deduplicated")
+            .unwrap()
+            .len(),
         1
     );
 }

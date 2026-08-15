@@ -1,0 +1,17 @@
+# A guard. Article 7 requires fail-closed: if this cannot reach its rules, it denies.
+id: guard.dangerous-shell
+version: 1
+type: guard
+description: Blocks destructive shell commands before execution.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+on_error: deny
+timeout_seconds: 5

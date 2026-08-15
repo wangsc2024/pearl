@@ -166,7 +166,9 @@ impl EvidenceSet {
 
 impl FromIterator<Evidence> for EvidenceSet {
     fn from_iter<T: IntoIterator<Item = Evidence>>(iter: T) -> Self {
-        Self { items: iter.into_iter().collect() }
+        Self {
+            items: iter.into_iter().collect(),
+        }
     }
 }
 
@@ -177,7 +179,9 @@ pub enum EvidenceRejection {
     Empty,
     #[error("evidence from '{producer}' records a failure")]
     ContainsFailure { producer: String },
-    #[error("evidence set contains no machine-produced item; Article 8 forbids self-certification")]
+    #[error(
+        "evidence set contains no machine-produced item; Article 8 forbids self-certification"
+    )]
     NoMachineEvidence,
 }
 
@@ -202,7 +206,9 @@ mod tests {
 
     #[test]
     fn passing_machine_evidence_supports_success() {
-        let set: EvidenceSet = [passing(EvidenceType::Test, "cargo test")].into_iter().collect();
+        let set: EvidenceSet = [passing(EvidenceType::Test, "cargo test")]
+            .into_iter()
+            .collect();
         assert!(set.supports_verified_success());
         assert_eq!(set.rejection_reason(), None);
     }
@@ -219,7 +225,9 @@ mod tests {
         assert!(!set.supports_verified_success());
         assert_eq!(
             set.rejection_reason(),
-            Some(EvidenceRejection::ContainsFailure { producer: "pytest".into() })
+            Some(EvidenceRejection::ContainsFailure {
+                producer: "pytest".into()
+            })
         );
     }
 
@@ -231,7 +239,10 @@ mod tests {
             .collect();
 
         assert!(!set.supports_verified_success());
-        assert_eq!(set.rejection_reason(), Some(EvidenceRejection::NoMachineEvidence));
+        assert_eq!(
+            set.rejection_reason(),
+            Some(EvidenceRejection::NoMachineEvidence)
+        );
     }
 
     #[test]
@@ -253,7 +264,10 @@ mod tests {
         let c = passing(EvidenceType::ToolOutput, "tool").with_artifact("out.json", b"different");
 
         assert_eq!(a.digest, b.digest, "same content must digest identically");
-        assert_ne!(a.digest, c.digest, "different content must digest differently");
+        assert_ne!(
+            a.digest, c.digest,
+            "different content must digest differently"
+        );
         assert_eq!(a.digest.as_deref().map(str::len), Some(64));
     }
 

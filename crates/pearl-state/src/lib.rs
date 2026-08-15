@@ -16,6 +16,4 @@ pub mod records;
 pub mod store;
 
 pub use records::{AttemptRecord, EffectRecord, LeaseRecord, RunRecord, TaskRecord};
-pub use store::{
-    EffectDecision, ReplaySummary, StateError, StateStore, TaskSubmission,
-};
+pub use store::{EffectDecision, ReplaySummary, StateError, StateStore, TaskSubmission};

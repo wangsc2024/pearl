@@ -12,7 +12,9 @@ use uuid::Uuid;
 macro_rules! uuid_id {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+        )]
         #[serde(transparent)]
         pub struct $name(Uuid);
 
@@ -65,7 +67,10 @@ uuid_id!(
 uuid_id!(RunId, "Identifies one execution of a task.");
 uuid_id!(AttemptId, "Identifies one try within a run.");
 uuid_id!(LeaseId, "Identifies one worker's claim on a task.");
-uuid_id!(CheckpointId, "Identifies one committed durable step boundary.");
+uuid_id!(
+    CheckpointId,
+    "Identifies one committed durable step boundary."
+);
 
 /// A task identifier supplied by the submitter rather than generated.
 ///
@@ -207,9 +212,6 @@ mod tests {
 
     #[test]
     fn worker_id_from_host_pid_is_stable() {
-        assert_eq!(
-            WorkerId::from_host_pid("box", 1234).as_str(),
-            "box:1234"
-        );
+        assert_eq!(WorkerId::from_host_pid("box", 1234).as_str(), "box:1234");
     }
 }

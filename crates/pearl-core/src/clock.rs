@@ -39,7 +39,9 @@ impl TestClock {
     }
 
     pub fn at(instant: DateTime<Utc>) -> Self {
-        Self { millis: Arc::new(AtomicI64::new(instant.timestamp_millis())) }
+        Self {
+            millis: Arc::new(AtomicI64::new(instant.timestamp_millis())),
+        }
     }
 
     /// Moves time forward.

@@ -95,8 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_evidence_task ON evidence (task_id);
 "#;
 
 /// Tables that `rebuild_from_ledger` clears before replaying.
-const PROJECTION_TABLES: [&str; 6] =
-    ["tasks", "runs", "attempts", "leases", "effects", "evidence"];
+const PROJECTION_TABLES: [&str; 6] = ["tasks", "runs", "attempts", "leases", "effects", "evidence"];
 
 /// A new task to persist.
 #[derive(Debug, Clone, PartialEq)]
@@ -187,25 +186,32 @@ impl StateStore {
     ) -> Result<TaskRecord, StateError> {
         let task = self
             .get_task(task_id)?
-            .ok_or_else(|| StateError::TaskNotFound { task_id: task_id.to_string() })?;
+            .ok_or_else(|| StateError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
 
         // Gate 1 — the state machine.
         task.state.validate_transition(to)?;
 
         // Gate 2 — the Exactness Gate (Article 2). Exactness demanded with no mechanical
         // verification cannot reach success; the honest destination is UNVERIFIED.
-        if to == TaskState::VerifiedSuccess && task.quality.gate() == ExactnessGate::BlockAutoComplete
+        if to == TaskState::VerifiedSuccess
+            && task.quality.gate() == ExactnessGate::BlockAutoComplete
         {
-            return Err(StateError::ExactnessGateBlocked { task_id: task_id.to_string() });
+            return Err(StateError::ExactnessGateBlocked {
+                task_id: task_id.to_string(),
+            });
         }
 
         // Gate 3 — evidence (Article 4). Success must be provable.
         if to == TaskState::VerifiedSuccess {
             match evidence {
                 None => {
-                    return Err(StateError::Transition(TransitionError::EvidenceInsufficient {
-                        reason: "no evidence supplied".into(),
-                    }))
+                    return Err(StateError::Transition(
+                        TransitionError::EvidenceInsufficient {
+                            reason: "no evidence supplied".into(),
+                        },
+                    ))
                 }
                 Some(set) => {
                     if let Some(rejection) = set.rejection_reason() {
@@ -247,7 +253,14 @@ impl StateStore {
                     },
                 );
                 append_in_tx(&tx, &ev)?;
-                insert_evidence(&tx, task_id, &item.evidence_type.as_str().to_string(), &item.producer, item.passed(), now)?;
+                insert_evidence(
+                    &tx,
+                    task_id,
+                    item.evidence_type.as_str(),
+                    &item.producer,
+                    item.passed(),
+                    now,
+                )?;
             }
         }
 
@@ -255,7 +268,10 @@ impl StateStore {
             let ev = EventEnvelope::new(
                 task.trace_id,
                 now,
-                PearlEvent::TaskCompleted { task_id: task_id.clone(), final_state: to },
+                PearlEvent::TaskCompleted {
+                    task_id: task_id.clone(),
+                    final_state: to,
+                },
             );
             append_in_tx(&tx, &ev)?;
         }
@@ -263,7 +279,9 @@ impl StateStore {
         tx.commit()?;
 
         self.get_task(task_id)?
-            .ok_or_else(|| StateError::TaskNotFound { task_id: task_id.to_string() })
+            .ok_or_else(|| StateError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })
     }
 
     pub fn get_task(&self, task_id: &TaskId) -> Result<Option<TaskRecord>, StateError> {
@@ -337,7 +355,9 @@ impl StateStore {
         }
         let task = self
             .get_task(task_id)?
-            .ok_or_else(|| StateError::TaskNotFound { task_id: task_id.to_string() })?;
+            .ok_or_else(|| StateError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
 
         let run_id = RunId::new();
         let envelope = EventEnvelope::new(
@@ -353,7 +373,15 @@ impl StateStore {
 
         let tx = self.ledger.connection_mut().transaction()?;
         append_in_tx(&tx, &envelope)?;
-        insert_run(&tx, run_id, task_id, task.trace_id, config_revision, config_hash, now)?;
+        insert_run(
+            &tx,
+            run_id,
+            task_id,
+            task.trace_id,
+            config_revision,
+            config_hash,
+            now,
+        )?;
         tx.commit()?;
 
         Ok(RunRecord {
@@ -378,7 +406,11 @@ impl StateStore {
         let envelope = EventEnvelope::new(
             trace_id,
             now,
-            PearlEvent::RunEnded { task_id, run_id, outcome },
+            PearlEvent::RunEnded {
+                task_id,
+                run_id,
+                outcome,
+            },
         );
 
         let tx = self.ledger.connection_mut().transaction()?;
@@ -427,7 +459,11 @@ impl StateStore {
         let envelope = EventEnvelope::new(
             trace_id,
             now,
-            PearlEvent::AttemptStarted { run_id, attempt_id, attempt_number },
+            PearlEvent::AttemptStarted {
+                run_id,
+                attempt_id,
+                attempt_number,
+            },
         )
         .with_attempt(attempt_id);
 
@@ -464,7 +500,9 @@ impl StateStore {
                 |r| r.get(0),
             )
             .optional()?
-            .ok_or_else(|| StateError::AttemptNotFound { attempt_id: attempt_id.to_string() })?;
+            .ok_or_else(|| StateError::AttemptNotFound {
+                attempt_id: attempt_id.to_string(),
+            })?;
         let run_id = RunId::parse(&run_id).map_err(|_| StateError::AttemptNotFound {
             attempt_id: attempt_id.to_string(),
         })?;
@@ -642,23 +680,34 @@ impl StateStore {
     ) -> Result<(), StateError> {
         let lease = self
             .get_lease(lease_id)?
-            .ok_or_else(|| StateError::LeaseNotFound { lease_id: lease_id.to_string() })?;
+            .ok_or_else(|| StateError::LeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })?;
         if lease.released_at.is_some() {
-            return Err(StateError::LeaseAlreadyReleased { lease_id: lease_id.to_string() });
+            return Err(StateError::LeaseAlreadyReleased {
+                lease_id: lease_id.to_string(),
+            });
         }
 
         let trace_id = self.trace_for_task(&lease.task_id)?;
         let envelope = EventEnvelope::new(
             trace_id,
             now,
-            PearlEvent::LeaseRenewed { lease_id, leased_until },
+            PearlEvent::LeaseRenewed {
+                lease_id,
+                leased_until,
+            },
         );
 
         let tx = self.ledger.connection_mut().transaction()?;
         append_in_tx(&tx, &envelope)?;
         tx.execute(
             "UPDATE leases SET leased_until = ?1, last_heartbeat = ?2 WHERE lease_id = ?3",
-            params![leased_until.to_rfc3339(), now.to_rfc3339(), lease_id.to_string()],
+            params![
+                leased_until.to_rfc3339(),
+                now.to_rfc3339(),
+                lease_id.to_string()
+            ],
         )?;
         tx.commit()?;
         Ok(())
@@ -671,12 +720,17 @@ impl StateStore {
     ) -> Result<(), StateError> {
         let lease = self
             .get_lease(lease_id)?
-            .ok_or_else(|| StateError::LeaseNotFound { lease_id: lease_id.to_string() })?;
+            .ok_or_else(|| StateError::LeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })?;
         let trace_id = self.trace_for_task(&lease.task_id)?;
         let envelope = EventEnvelope::new(
             trace_id,
             now,
-            PearlEvent::LeaseReleased { task_id: lease.task_id.clone(), lease_id },
+            PearlEvent::LeaseReleased {
+                task_id: lease.task_id.clone(),
+                lease_id,
+            },
         );
 
         let tx = self.ledger.connection_mut().transaction()?;
@@ -715,7 +769,11 @@ impl StateStore {
         }
         tx.commit()?;
 
-        Ok(ReplaySummary { total_events: events.len() as u64, applied, skipped })
+        Ok(ReplaySummary {
+            total_events: events.len() as u64,
+            applied,
+            skipped,
+        })
     }
 
     // --------------------------------------------------------------- helpers
@@ -730,8 +788,9 @@ impl StateStore {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let (task_id, trace_id) =
-            row.ok_or_else(|| StateError::RunNotFound { run_id: run_id.to_string() })?;
+        let (task_id, trace_id) = row.ok_or_else(|| StateError::RunNotFound {
+            run_id: run_id.to_string(),
+        })?;
         Ok((
             TaskId::parse(task_id)?,
             TraceId::parse(&trace_id).map_err(|_| StateError::RunNotFound {
@@ -743,7 +802,9 @@ impl StateStore {
     fn trace_for_task(&self, task_id: &TaskId) -> Result<TraceId, StateError> {
         self.get_task(task_id)?
             .map(|t| t.trace_id)
-            .ok_or_else(|| StateError::TaskNotFound { task_id: task_id.to_string() })
+            .ok_or_else(|| StateError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })
     }
 }
 
@@ -960,7 +1021,13 @@ fn insert_evidence(
     tx.execute(
         "INSERT INTO evidence (task_id, evidence_type, producer, passed, recorded_at)
          VALUES (?1,?2,?3,?4,?5)",
-        params![task_id.as_str(), evidence_type, producer, passed as i32, now.to_rfc3339()],
+        params![
+            task_id.as_str(),
+            evidence_type,
+            producer,
+            passed as i32,
+            now.to_rfc3339()
+        ],
     )?;
     Ok(())
 }
@@ -972,7 +1039,12 @@ fn insert_evidence(
 /// metrics, not for current state.
 fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, StateError> {
     match &envelope.event {
-        PearlEvent::TaskCreated { task_id, task_type, precision_class, quality } => {
+        PearlEvent::TaskCreated {
+            task_id,
+            task_type,
+            precision_class,
+            quality,
+        } => {
             // The event carries the complete quality contract, so replay reconstructs it
             // exactly rather than guessing. See ADR-0001 and the replay equivalence test.
             tx.execute(
@@ -995,7 +1067,12 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::TaskStateChanged { task_id, to, reason, .. } => {
+        PearlEvent::TaskStateChanged {
+            task_id,
+            to,
+            reason,
+            ..
+        } => {
             tx.execute(
                 "UPDATE tasks SET state = ?1, updated_at = ?2, last_reason = ?3 WHERE task_id = ?4",
                 params![
@@ -1007,7 +1084,12 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::RunStarted { task_id, run_id, config_revision, config_hash } => {
+        PearlEvent::RunStarted {
+            task_id,
+            run_id,
+            config_revision,
+            config_hash,
+        } => {
             tx.execute(
                 "INSERT OR REPLACE INTO runs
                     (run_id, task_id, trace_id, started_at, ended_at, config_revision, config_hash, outcome)
@@ -1023,14 +1105,24 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::RunEnded { run_id, outcome, .. } => {
+        PearlEvent::RunEnded {
+            run_id, outcome, ..
+        } => {
             tx.execute(
                 "UPDATE runs SET ended_at = ?1, outcome = ?2 WHERE run_id = ?3",
-                params![envelope.occurred_at.to_rfc3339(), outcome.as_str(), run_id.to_string()],
+                params![
+                    envelope.occurred_at.to_rfc3339(),
+                    outcome.as_str(),
+                    run_id.to_string()
+                ],
             )?;
             Ok(true)
         }
-        PearlEvent::AttemptStarted { run_id, attempt_id, attempt_number } => {
+        PearlEvent::AttemptStarted {
+            run_id,
+            attempt_id,
+            attempt_number,
+        } => {
             tx.execute(
                 "INSERT OR REPLACE INTO attempts
                     (attempt_id, run_id, attempt_number, started_at, ended_at, outcome, exit_reason)
@@ -1051,7 +1143,12 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::AttemptEnded { attempt_id, outcome, exit_reason, .. } => {
+        PearlEvent::AttemptEnded {
+            attempt_id,
+            outcome,
+            exit_reason,
+            ..
+        } => {
             tx.execute(
                 "UPDATE attempts SET ended_at = ?1, outcome = ?2, exit_reason = ?3
                  WHERE attempt_id = ?4",
@@ -1064,7 +1161,12 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::LeaseAcquired { task_id, lease_id, worker_id, leased_until } => {
+        PearlEvent::LeaseAcquired {
+            task_id,
+            lease_id,
+            worker_id,
+            leased_until,
+        } => {
             tx.execute(
                 "INSERT OR REPLACE INTO leases
                     (lease_id, task_id, worker_id, acquired_at, leased_until, last_heartbeat, released_at)
@@ -1079,7 +1181,10 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::LeaseRenewed { lease_id, leased_until } => {
+        PearlEvent::LeaseRenewed {
+            lease_id,
+            leased_until,
+        } => {
             tx.execute(
                 "UPDATE leases SET leased_until = ?1, last_heartbeat = ?2 WHERE lease_id = ?3",
                 params![
@@ -1097,7 +1202,10 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::EffectRequested { effect, idempotency_key } => {
+        PearlEvent::EffectRequested {
+            effect,
+            idempotency_key,
+        } => {
             tx.execute(
                 "INSERT OR IGNORE INTO effects (idempotency_key, effect, requested_at, committed_at)
                  VALUES (?1,?2,?3,NULL)",
@@ -1109,14 +1217,21 @@ fn project(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<bool, State
             )?;
             Ok(true)
         }
-        PearlEvent::EffectCommitted { idempotency_key, .. } => {
+        PearlEvent::EffectCommitted {
+            idempotency_key, ..
+        } => {
             tx.execute(
                 "UPDATE effects SET committed_at = ?1 WHERE idempotency_key = ?2",
                 params![envelope.occurred_at.to_rfc3339(), idempotency_key.as_str()],
             )?;
             Ok(true)
         }
-        PearlEvent::EvidenceStored { task_id, evidence_type, producer, passed } => {
+        PearlEvent::EvidenceStored {
+            task_id,
+            evidence_type,
+            producer,
+            passed,
+        } => {
             tx.execute(
                 "INSERT INTO evidence (task_id, evidence_type, producer, passed, recorded_at)
                  VALUES (?1,?2,?3,?4,?5)",
@@ -1225,10 +1340,7 @@ fn parse_time(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<DateTime<
         .map_err(to_sqlite_err)
 }
 
-fn parse_time_opt(
-    row: &rusqlite::Row<'_>,
-    idx: usize,
-) -> rusqlite::Result<Option<DateTime<Utc>>> {
+fn parse_time_opt(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Option<DateTime<Utc>>> {
     let raw: Option<String> = row.get(idx)?;
     match raw {
         None => Ok(None),

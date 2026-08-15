@@ -48,9 +48,15 @@ fn claim_moves_task_to_leased() {
 
     let lease = mgr.claim(&mut store, &id, &worker(1)).unwrap();
 
-    assert_eq!(store.get_task(&id).unwrap().unwrap().state, TaskState::Leased);
+    assert_eq!(
+        store.get_task(&id).unwrap().unwrap().state,
+        TaskState::Leased
+    );
     assert_eq!(lease.worker_id, worker(1));
-    assert_eq!(lease.leased_until, clock.now() + TimeDelta::try_seconds(60).unwrap());
+    assert_eq!(
+        lease.leased_until,
+        clock.now() + TimeDelta::try_seconds(60).unwrap()
+    );
 }
 
 #[test]
@@ -119,7 +125,10 @@ fn heartbeat_extends_the_deadline() {
     clock.advance_secs(30);
     let extended = mgr.heartbeat(&mut store, lease.lease_id).unwrap();
 
-    assert!(extended > lease.leased_until, "heartbeat must push the deadline out");
+    assert!(
+        extended > lease.leased_until,
+        "heartbeat must push the deadline out"
+    );
     assert_eq!(extended, clock.now() + TimeDelta::try_seconds(60).unwrap());
 }
 
@@ -129,7 +138,9 @@ fn a_heartbeating_worker_is_never_reaped() {
     let (mut store, id) = ready_store(&clock);
     let mgr = LeaseManager::new(LeaseConfig::default(), clock.clone());
     let lease = mgr.claim(&mut store, &id, &worker(1)).unwrap();
-    store.transition(&id, TaskState::Running, None, None, clock.now()).unwrap();
+    store
+        .transition(&id, TaskState::Running, None, None, clock.now())
+        .unwrap();
 
     // Simulate ten minutes of healthy work: beat every 20s.
     for _ in 0..30 {
@@ -141,7 +152,10 @@ fn a_heartbeating_worker_is_never_reaped() {
         );
     }
 
-    assert_eq!(store.get_task(&id).unwrap().unwrap().state, TaskState::Running);
+    assert_eq!(
+        store.get_task(&id).unwrap().unwrap().state,
+        TaskState::Running
+    );
 }
 
 #[test]
@@ -165,7 +179,12 @@ fn worker_that_dies_before_starting_returns_the_task_to_ready() {
         "nothing ran, so the task is immediately claimable again"
     );
     assert!(
-        store.get_lease(lease.lease_id).unwrap().unwrap().released_at.is_some(),
+        store
+            .get_lease(lease.lease_id)
+            .unwrap()
+            .unwrap()
+            .released_at
+            .is_some(),
         "the dead lease must be closed"
     );
 }
@@ -177,7 +196,9 @@ fn worker_that_dies_mid_run_goes_to_retry_wait_not_straight_to_ready() {
     let mgr = LeaseManager::new(LeaseConfig::default(), clock.clone());
 
     let lease = mgr.claim(&mut store, &id, &worker(1)).unwrap();
-    store.transition(&id, TaskState::Running, None, None, clock.now()).unwrap();
+    store
+        .transition(&id, TaskState::Running, None, None, clock.now())
+        .unwrap();
 
     // The worker dies mid-execution. Work already started, so side effects may already
     // have landed; re-offering the task immediately would risk repeating them without
@@ -191,11 +212,22 @@ fn worker_that_dies_mid_run_goes_to_retry_wait_not_straight_to_ready() {
         TaskState::RetryWait,
         "a started run must be reclaimed through retry, not straight back to the pool"
     );
-    assert!(store.get_lease(lease.lease_id).unwrap().unwrap().released_at.is_some());
+    assert!(store
+        .get_lease(lease.lease_id)
+        .unwrap()
+        .unwrap()
+        .released_at
+        .is_some());
 
     // RetryWait is not a dead end: it leads back to Ready.
     store
-        .transition(&id, TaskState::Ready, Some("backoff elapsed".into()), None, clock.now())
+        .transition(
+            &id,
+            TaskState::Ready,
+            Some("backoff elapsed".into()),
+            None,
+            clock.now(),
+        )
         .unwrap();
     assert!(mgr.claim(&mut store, &id, &worker(2)).is_ok());
 }
@@ -229,7 +261,10 @@ fn reclaimed_task_can_be_picked_up_by_another_worker() {
     // The whole point: work survives the worker.
     let second = mgr.claim(&mut store, &id, &worker(2)).unwrap();
     assert_eq!(second.worker_id, worker(2));
-    assert_eq!(store.get_task(&id).unwrap().unwrap().state, TaskState::Leased);
+    assert_eq!(
+        store.get_task(&id).unwrap().unwrap().state,
+        TaskState::Leased
+    );
 }
 
 #[test]
@@ -240,15 +275,21 @@ fn reclaimed_run_is_recorded_as_a_distinct_attempt() {
 
     // First worker claims, opens a run, then dies mid-attempt.
     mgr.claim(&mut store, &id, &worker(1)).unwrap();
-    store.transition(&id, TaskState::Running, None, None, clock.now()).unwrap();
-    let run = store.start_run(&id, "system@builtin", "hash", clock.now()).unwrap();
+    store
+        .transition(&id, TaskState::Running, None, None, clock.now())
+        .unwrap();
+    let run = store
+        .start_run(&id, "system@builtin", "hash", clock.now())
+        .unwrap();
     store.start_attempt(run.run_id, 1, clock.now()).unwrap();
 
     clock.advance_secs(61);
     mgr.reap(&mut store).unwrap();
 
     // Second worker retries: a new attempt, not a mutation of the first.
-    store.transition(&id, TaskState::Ready, None, None, clock.now()).unwrap();
+    store
+        .transition(&id, TaskState::Ready, None, None, clock.now())
+        .unwrap();
     mgr.claim(&mut store, &id, &worker(2)).unwrap();
     store.start_attempt(run.run_id, 2, clock.now()).unwrap();
 
@@ -300,7 +341,10 @@ fn reap_is_idempotent() {
 
     // A second pass has nothing to do, because reclamation released the lease.
     let second = mgr.reap(&mut store).unwrap();
-    assert!(second.is_empty(), "second reap should find nothing: {second:?}");
+    assert!(
+        second.is_empty(),
+        "second reap should find nothing: {second:?}"
+    );
 }
 
 #[test]
@@ -312,16 +356,33 @@ fn reap_does_not_disturb_a_task_that_already_moved_on() {
 
     // The task is cancelled while the lease is still outstanding.
     store
-        .transition(&id, TaskState::Cancelled, Some("operator".into()), None, clock.now())
+        .transition(
+            &id,
+            TaskState::Cancelled,
+            Some("operator".into()),
+            None,
+            clock.now(),
+        )
         .unwrap();
     clock.advance_secs(61);
 
     let report = mgr.reap(&mut store).unwrap();
 
-    assert!(report.reclaimed.is_empty(), "a cancelled task must not be requeued");
+    assert!(
+        report.reclaimed.is_empty(),
+        "a cancelled task must not be requeued"
+    );
     assert_eq!(report.skipped, vec![id.clone()]);
-    assert_eq!(store.get_task(&id).unwrap().unwrap().state, TaskState::Cancelled);
-    assert!(store.get_lease(lease.lease_id).unwrap().unwrap().released_at.is_some());
+    assert_eq!(
+        store.get_task(&id).unwrap().unwrap().state,
+        TaskState::Cancelled
+    );
+    assert!(store
+        .get_lease(lease.lease_id)
+        .unwrap()
+        .unwrap()
+        .released_at
+        .is_some());
 }
 
 #[test]
@@ -330,8 +391,12 @@ fn interrupted_verification_retries_rather_than_requeueing_directly() {
     let (mut store, id) = ready_store(&clock);
     let mgr = LeaseManager::new(LeaseConfig::default(), clock.clone());
     mgr.claim(&mut store, &id, &worker(1)).unwrap();
-    store.transition(&id, TaskState::Running, None, None, clock.now()).unwrap();
-    store.transition(&id, TaskState::Verifying, None, None, clock.now()).unwrap();
+    store
+        .transition(&id, TaskState::Running, None, None, clock.now())
+        .unwrap();
+    store
+        .transition(&id, TaskState::Verifying, None, None, clock.now())
+        .unwrap();
 
     clock.advance_secs(61);
     let report = mgr.reap(&mut store).unwrap();
@@ -415,7 +480,10 @@ fn recovery_survives_a_process_restart() {
     let report = mgr.reap(&mut store).unwrap();
 
     assert_eq!(report.reclaimed, vec![id.clone()]);
-    assert_eq!(store.get_task(&id).unwrap().unwrap().state, TaskState::Ready);
+    assert_eq!(
+        store.get_task(&id).unwrap().unwrap().state,
+        TaskState::Ready
+    );
 }
 
 #[test]
@@ -431,6 +499,9 @@ fn reclamation_is_visible_after_replay() {
     store.rebuild_from_ledger().unwrap();
     let after = store.get_task(&id).unwrap().unwrap();
 
-    assert_eq!(before, after, "reclamation must be reconstructible from events");
+    assert_eq!(
+        before, after,
+        "reclamation must be reconstructible from events"
+    );
     assert_eq!(after.state, TaskState::Ready);
 }

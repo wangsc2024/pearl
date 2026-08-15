@@ -179,7 +179,13 @@ fn article_4_empty_evidence_set_is_refused() {
 
     let empty = EvidenceSet::new();
     let err = store
-        .transition(&id, TaskState::VerifiedSuccess, None, Some(&empty), later(10))
+        .transition(
+            &id,
+            TaskState::VerifiedSuccess,
+            None,
+            Some(&empty),
+            later(10),
+        )
         .unwrap_err();
     assert!(err.to_string().contains("empty"), "got: {err}");
 }
@@ -211,10 +217,7 @@ fn article_8_human_approval_alone_cannot_certify_success() {
             later(10),
         )
         .unwrap_err();
-    assert!(
-        err.to_string().contains("machine-produced"),
-        "got: {err}"
-    );
+    assert!(err.to_string().contains("machine-produced"), "got: {err}");
 }
 
 #[test]
@@ -306,7 +309,9 @@ fn attempts_accumulate_on_the_task() {
     let run = store.start_run(&id, "rev", "hash", later(1)).unwrap();
 
     for n in 1..=3 {
-        let attempt = store.start_attempt(run.run_id, n, later(n as i64 + 1)).unwrap();
+        let attempt = store
+            .start_attempt(run.run_id, n, later(n as i64 + 1))
+            .unwrap();
         store
             .end_attempt(
                 attempt.attempt_id,
@@ -333,7 +338,9 @@ fn run_outcome_is_recorded() {
         .create_task(submission("t1", QualitySpec::mechanical()), t0())
         .unwrap();
     let run = store.start_run(&id, "rev", "hash", later(1)).unwrap();
-    store.end_run(run.run_id, RunOutcome::Success, later(5)).unwrap();
+    store
+        .end_run(run.run_id, RunOutcome::Success, later(5))
+        .unwrap();
 
     let stored = store.get_run(run.run_id).unwrap().unwrap();
     assert_eq!(stored.outcome.as_deref(), Some("success"));
@@ -351,7 +358,11 @@ fn list_by_state_is_oldest_first() {
 
     let created = store.list_by_state(TaskState::Created).unwrap();
     let ids: Vec<_> = created.iter().map(|t| t.task_id.to_string()).collect();
-    assert_eq!(ids, vec!["t3", "t1", "t2"], "creation order, not alphabetical");
+    assert_eq!(
+        ids,
+        vec!["t3", "t1", "t2"],
+        "creation order, not alphabetical"
+    );
     assert_eq!(store.count_by_state(TaskState::Created).unwrap(), 3);
 }
 

@@ -184,7 +184,7 @@ impl EventLedger {
 
 /// Appends via a bare connection.
 pub fn append_with(conn: &Connection, envelope: &EventEnvelope) -> Result<(), LedgerError> {
-    let (event_type, payload, task_id, run_id) = encode(envelope)?;
+    let row = encode(envelope)?;
     conn.execute(
         "INSERT INTO events
             (id, schema_version, occurred_at, trace_id, task_id, run_id, attempt_id, worker_id, event_type, payload)
@@ -194,12 +194,12 @@ pub fn append_with(conn: &Connection, envelope: &EventEnvelope) -> Result<(), Le
             envelope.schema_version,
             envelope.occurred_at.to_rfc3339(),
             envelope.trace_id.to_string(),
-            task_id,
-            run_id,
+            row.task_id,
+            row.run_id,
             envelope.attempt_id.map(|a| a.to_string()),
             envelope.worker_id.as_ref().map(WorkerId::to_string),
-            event_type,
-            payload,
+            row.event_type,
+            row.payload,
         ],
     )?;
     Ok(())
@@ -211,17 +211,25 @@ pub fn append_in_tx(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Result<()
     append_with(tx, envelope)
 }
 
+/// The denormalized columns derived from an envelope.
+///
+/// `task_id` and `run_id` are lifted out of the payload into their own columns purely so
+/// they can be indexed; the payload remains the authoritative copy.
+struct EventRow {
+    event_type: &'static str,
+    payload: String,
+    task_id: Option<String>,
+    run_id: Option<String>,
+}
+
 /// Splits an envelope into its row representation.
-fn encode(
-    envelope: &EventEnvelope,
-) -> Result<(&'static str, String, Option<String>, Option<String>), LedgerError> {
-    let payload = serde_json::to_string(envelope)?;
-    Ok((
-        envelope.event_type(),
-        payload,
-        envelope.event.task_id().map(|t| t.as_str().to_string()),
-        envelope.event.run_id().map(|r| r.to_string()),
-    ))
+fn encode(envelope: &EventEnvelope) -> Result<EventRow, LedgerError> {
+    Ok(EventRow {
+        event_type: envelope.event_type(),
+        payload: serde_json::to_string(envelope)?,
+        task_id: envelope.event.task_id().map(|t| t.as_str().to_string()),
+        run_id: envelope.event.run_id().map(|r| r.to_string()),
+    })
 }
 
 /// Rebuilds an envelope from its stored payload.
@@ -348,13 +356,21 @@ mod tests {
                 &ledger,
                 trace,
                 ts(),
-                PearlEvent::TaskPlanned { task_id: task(), step_count: i },
+                PearlEvent::TaskPlanned {
+                    task_id: task(),
+                    step_count: i,
+                },
             )
             .unwrap();
             expected.push(env.id);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        let actual: Vec<_> = ledger.read_trace(trace).unwrap().iter().map(|e| e.id).collect();
+        let actual: Vec<_> = ledger
+            .read_trace(trace)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
         assert_eq!(actual, expected);
     }
 
@@ -402,7 +418,10 @@ mod tests {
             &ledger,
             TraceId::new(),
             ts(),
-            PearlEvent::TaskPlanned { task_id: task(), step_count: 2 },
+            PearlEvent::TaskPlanned {
+                task_id: task(),
+                step_count: 2,
+            },
         )
         .unwrap();
 
@@ -437,7 +456,10 @@ mod tests {
                 EventEnvelope::new(
                     trace,
                     ts(),
-                    PearlEvent::TaskPlanned { task_id: task(), step_count: i },
+                    PearlEvent::TaskPlanned {
+                        task_id: task(),
+                        step_count: i,
+                    },
                 )
             })
             .collect();

@@ -263,23 +263,32 @@ corresponding `docs/adr/ADR-*.md` in the same change set.
 
 ## Enforcement Summary
 
-| Article | Machine check | Enforced in |
-|---|---|---|
-| 1 | `check_no_llm_for_deterministic` | `pearl-governance` |
-| 2 | `check_exactness_has_verifier` | `pearl-plan-compiler` (planned), CI gate |
-| 3 | prompt-surface lint | CI gate |
-| 4 | `check_success_has_evidence` | `pearl-state` transition guard |
-| 5 | `check_effect_has_idempotency_key` | `pearl-governance` |
-| 6 | replay determinism test | `tests/replay` |
-| 7 | `check_guard_fail_closed` | `pearl-guard` (planned) |
-| 8 | verifier-in-chain assertion | `pearl-assurance` (planned) |
-| 9 | runtime contract tests | `tests/contract` |
-| 10 | `check_run_has_config_revision` | `pearl-state` insert guard |
-| 11 | autonomy derivation | `pearl-policy` (planned) |
-| 12 | `check_architecture_change_has_adr` | CI gate |
+| Article | Machine check | Enforced in | Status |
+|---|---|---|---|
+| 1 | `check_no_llm_for_deterministic` | `pearl-governance::checks` | enforced |
+| 1 | p0 must generate deterministically | `pearl-cli::spec` | enforced |
+| 2 | Exactness Gate blocks auto-complete | `pearl-state::store::transition` | enforced |
+| 2 | `check_exactness_has_verifier` | `pearl-cli::spec`, `pearl-governance::checks` | enforced |
+| 2 | `check_verifier_declares_schemas` | `pearl-governance::checks` | enforced |
+| 3 | prompt-surface lint | — | **planned** |
+| 4 | evidence required for `VERIFIED_SUCCESS` | `pearl-state::store::transition` | enforced |
+| 5 | `check_effect_has_idempotency_key` | `pearl-governance::checks` | enforced |
+| 5 | effect deduplication by key | `pearl-state::store::request_effect` | enforced |
+| 6 | replay equivalence | `pearl-state/tests/replay.rs` | enforced |
+| 6 | ledger append-only (SQLite triggers) | `pearl-events::ledger` | enforced |
+| 7 | `check_guard_fail_closed` | `pearl-governance::checks` | enforced |
+| 8 | machine-produced evidence required | `pearl-core::evidence` | enforced |
+| 8 | verifier-in-chain assertion | `pearl-assurance` | **planned** |
+| 9 | runtime cancellation contract | `pearl-process-supervisor/tests/runtime_contract.rs` | enforced |
+| 9 | `check_has_timeout` | `pearl-governance::checks` | enforced |
+| 10 | `config_revision` + `config_hash` on every run | `pearl-state::store::start_run` | enforced |
+| 11 | autonomy derived from verifiability | `pearl-policy` | **planned** |
+| 12 | `check_architecture_change_has_adr` | CI gate | **planned** |
 
-Checks marked *(planned)* correspond to crates not yet implemented in Phase 1. The article
-is still binding; the automated check lands with its crate.
+Articles marked **planned** are still binding on authors; only the automated check is
+outstanding, and it lands with the crate that owns it (see `docs/system-analysis.md` §D for
+the phase that delivers each one). An article without an automated check is enforced by
+review, which is weaker — that gap is deliberate and tracked, not overlooked.
 
 ---
 

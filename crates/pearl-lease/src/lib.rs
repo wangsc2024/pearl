@@ -46,7 +46,10 @@ impl LeaseConfig {
                 ),
             });
         }
-        Ok(Self { duration, heartbeat_interval })
+        Ok(Self {
+            duration,
+            heartbeat_interval,
+        })
     }
 
     /// 60s lease, 20s heartbeat: tolerates two missed beats.
@@ -93,10 +96,15 @@ impl<C: Clock> LeaseManager<C> {
         let now = self.clock.now();
         let task = store
             .get_task(task_id)?
-            .ok_or_else(|| LeaseError::TaskNotFound { task_id: task_id.to_string() })?;
+            .ok_or_else(|| LeaseError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
 
         if !task.state.is_claimable() {
-            return Err(LeaseError::NotClaimable { task_id: task_id.to_string(), state: task.state });
+            return Err(LeaseError::NotClaimable {
+                task_id: task_id.to_string(),
+                state: task.state,
+            });
         }
         if let Some(existing) = store.active_lease_for_task(task_id)? {
             if existing.is_active(now) {
@@ -145,10 +153,14 @@ impl<C: Clock> LeaseManager<C> {
         let now = self.clock.now();
         let lease = store
             .get_lease(lease_id)?
-            .ok_or_else(|| LeaseError::LeaseNotFound { lease_id: lease_id.to_string() })?;
+            .ok_or_else(|| LeaseError::LeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })?;
 
         if lease.released_at.is_some() {
-            return Err(LeaseError::AlreadyReleased { lease_id: lease_id.to_string() });
+            return Err(LeaseError::AlreadyReleased {
+                lease_id: lease_id.to_string(),
+            });
         }
         // A lapsed lease cannot be revived: the reaper may already have handed the task
         // to another worker, so extending it would create two owners.
@@ -298,7 +310,10 @@ pub enum LeaseError {
     #[error("lease '{lease_id}' was already released")]
     AlreadyReleased { lease_id: String },
     #[error("lease '{lease_id}' expired at {expired_at}; it cannot be renewed")]
-    Expired { lease_id: String, expired_at: DateTime<Utc> },
+    Expired {
+        lease_id: String,
+        expired_at: DateTime<Utc>,
+    },
     #[error(transparent)]
     State(#[from] StateError),
     #[error(transparent)]
