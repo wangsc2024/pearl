@@ -148,6 +148,36 @@ pub enum PearlEvent {
         duration_ms: u64,
     },
 
+    /// An agent runtime was invoked — §42.
+    ///
+    /// Distinct from `script.started` on purpose. Article 1 makes the mechanical/agent
+    /// boundary the most important fact about an execution, and §71 measures the ratio; a
+    /// ledger that recorded both as "script" could not answer either question.
+    #[serde(rename = "agent.started")]
+    AgentStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
+        capability_id: String,
+        runtime: String,
+        /// The model, when the runtime names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+
+    #[serde(rename = "agent.completed")]
+    AgentCompleted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
+        capability_id: String,
+        /// `-1` when the runtime never reported a code of its own.
+        exit_code: i32,
+        duration_ms: u64,
+        /// Tokens consumed, when the runtime reports them. Budget accounting needs this and
+        /// cannot reconstruct it later.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<u64>,
+    },
+
     #[serde(rename = "verification.started")]
     VerificationStarted {
         task_id: TaskId,
@@ -220,6 +250,8 @@ impl PearlEvent {
             PearlEvent::LeaseReleased { .. } => "lease.released",
             PearlEvent::ScriptStarted { .. } => "script.started",
             PearlEvent::ScriptCompleted { .. } => "script.completed",
+            PearlEvent::AgentStarted { .. } => "agent.started",
+            PearlEvent::AgentCompleted { .. } => "agent.completed",
             PearlEvent::VerificationStarted { .. } => "verification.started",
             PearlEvent::VerificationPassed { .. } => "verification.passed",
             PearlEvent::VerificationFailed { .. } => "verification.failed",
@@ -255,7 +287,9 @@ impl PearlEvent {
             PearlEvent::AttemptStarted { task_id, .. }
             | PearlEvent::AttemptEnded { task_id, .. }
             | PearlEvent::ScriptStarted { task_id, .. }
-            | PearlEvent::ScriptCompleted { task_id, .. } => task_id.as_ref(),
+            | PearlEvent::ScriptCompleted { task_id, .. }
+            | PearlEvent::AgentStarted { task_id, .. }
+            | PearlEvent::AgentCompleted { task_id, .. } => task_id.as_ref(),
             _ => None,
         }
     }

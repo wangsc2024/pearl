@@ -1,0 +1,32 @@
+# A minimal declarative workflow, kept in the repository so `pearl workflow validate` and
+# `pearl workflow run` have something real to work on and a regression has somewhere to show.
+#
+# What this demonstrates: dependency ordering, per-step timeouts, and a durable checkpoint
+# after each step, so `--resume` skips work that already completed.
+#
+# What it deliberately does not demonstrate, because PEARL cannot do it yet: **data does not
+# flow between steps.** Each step receives the task payload, not its predecessor's output.
+# That is why both steps here run the same self-sufficient capability rather than a collect
+# step feeding a verify step — a workflow that appeared to pipe one into the other would be
+# describing something the executor does not do. Step-to-step data flow, and the dynamic
+# Planner-Executor form in SS 40, remain future work.
+name: example.score-twice
+description: Scores a task, then scores it again, to show ordering and checkpoints.
+
+steps:
+  - id: score
+    capability: script.task-score
+    step_type: run
+    timeout_secs: 10
+
+  - id: score-again
+    capability: script.task-score
+    step_type: run
+    # The dependency is the point: `score-again` must not start until `score` has completed
+    # and its checkpoint has been committed (SS 41).
+    depends_on: [score]
+    timeout_secs: 10
+
+budget:
+  max_steps: 8
+  max_llm_calls: 0

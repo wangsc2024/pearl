@@ -1,15 +1,59 @@
 # Capability manifests for the Todoist Ingress workflow
 
 ---
+id: script.todoist-score
+version: 1
+type: script
+kind: transformer
+description: Scores Todoist tasks by the DDP weighted formula.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/todoist_scorer.py
+quality:
+  # §18: the weights are fully specified, so there is nothing for a model to decide.
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: script.todoist-route
+version: 1
+type: script
+kind: transformer
+description: Routes scored Todoist tasks to an execution lane by fixed thresholds.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/todoist_router.py
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+# NOT IMPLEMENTED. These need a Todoist API client, which does not exist yet; they carry no
+# entrypoint so the registry reports that plainly instead of implying otherwise.
+---
 id: script.todoist-query
 version: 1
 type: script
-description: Queries Todoist API for today's active tasks.
+kind: collector
+description: Queries Todoist for today's active tasks. NOT IMPLEMENTED -- no entrypoint yet.
 execution:
   kind: script
   runtime: python
 quality:
-  deterministic: true
+  deterministic: false
 risk:
   side_effect: false
 platform:
@@ -21,35 +65,19 @@ timeout_seconds: 30
 id: script.todoist-overdue
 version: 1
 type: script
-description: Queries Todoist API for overdue tasks.
+kind: collector
+description: Queries Todoist for overdue tasks. NOT IMPLEMENTED -- no entrypoint yet.
 execution:
   kind: script
   runtime: python
 quality:
-  deterministic: true
+  deterministic: false
 risk:
   side_effect: false
 platform:
   windows: true
   linux: true
 timeout_seconds: 30
-
----
-id: script.merge-task-lists
-version: 1
-type: script
-description: Merges multiple task lists into a unified structure.
-execution:
-  kind: script
-  runtime: rust
-quality:
-  deterministic: true
-risk:
-  side_effect: false
-platform:
-  windows: true
-  linux: true
-timeout_seconds: 10
 
 ---
 id: verifier.task-list-schema

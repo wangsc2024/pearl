@@ -81,6 +81,15 @@ pub enum Runtime {
     Codex,
     Cursor,
     OpenaiCompatible,
+    /// Groq's OpenAI-compatible endpoint.
+    ///
+    /// Named explicitly rather than folded into `openai_compatible` so that a manifest, a
+    /// permission rule and a routing decision can all speak about one provider. They differ
+    /// in cost, rate limit and available models, which are exactly the things policy cares
+    /// about.
+    Groq,
+    Mistral,
+    Nvidia,
     LlamaCpp,
     Native,
 }
@@ -96,6 +105,9 @@ impl Runtime {
             Runtime::Codex => "codex",
             Runtime::Cursor => "cursor",
             Runtime::OpenaiCompatible => "openai_compatible",
+            Runtime::Groq => "groq",
+            Runtime::Mistral => "mistral",
+            Runtime::Nvidia => "nvidia",
             Runtime::LlamaCpp => "llama_cpp",
             Runtime::Native => "native",
         }

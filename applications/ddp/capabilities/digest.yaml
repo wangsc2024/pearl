@@ -2,14 +2,20 @@
 
 ---
 id: script.fetch-news
-version: 1
+version: 2
 type: script
+kind: collector
 description: Fetches news from configured RSS/API sources.
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: ../scripts/news_collector.py
 quality:
-  deterministic: true
+  # The collector is deterministic in shape but its *source* is not: the same call on a
+  # different day returns different news. Declared false because Article 1's check reads this
+  # as "same input, same output", which a live feed cannot promise.
+  deterministic: false
 risk:
   side_effect: false
 platform:
@@ -18,15 +24,80 @@ platform:
 timeout_seconds: 60
 
 ---
+id: script.fetch-gmail
+version: 1
+type: script
+kind: collector
+description: Collects recent Gmail messages for the digest.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/gmail_collector.py
+quality:
+  deterministic: false
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 60
+
+---
+id: script.fetch-security
+version: 1
+type: script
+kind: collector
+description: Collects security advisories relevant to this codebase.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/security_collector.py
+quality:
+  deterministic: false
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 60
+
+---
+id: script.cache-validator
+version: 1
+type: script
+kind: validator
+description: Decides mechanically whether cached collector data is still usable.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/cache_validator.py
+quality:
+  # §63: cache age against a threshold is arithmetic, so Article 1 forbids asking a model.
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 10
+
+# NOT IMPLEMENTED. Declared so the workflow can name it, and deliberately without an
+# entrypoint: `resolve_entrypoint` then reports "declares no execution.entrypoint" rather
+# than the manifest implying a script exists. Writing one is what makes this runnable.
+---
 id: script.fetch-weather
 version: 1
 type: script
-description: Fetches current weather data from weather API.
+kind: collector
+description: Fetches current weather data. NOT IMPLEMENTED -- no entrypoint yet.
 execution:
   kind: script
   runtime: python
 quality:
-  deterministic: true
+  deterministic: false
 risk:
   side_effect: false
 platform:
@@ -53,12 +124,15 @@ timeout_seconds: 120
 
 ---
 id: verifier.digest-schema
-version: 1
+version: 2
 type: verifier
-description: Validates digest output against the daily-digest-output-v1 schema.
+kind: verifier
+description: Validates digest output before it is notified.
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: ../scripts/verify_digest.py
 quality:
   deterministic: true
 risk:
@@ -67,7 +141,6 @@ platform:
   windows: true
   linux: true
 schemas:
-  input: daily-digest-output-v1
   output: verification-result-v1
 timeout_seconds: 30
 

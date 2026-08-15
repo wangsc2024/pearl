@@ -13,12 +13,14 @@
 //! 3. the evidence check (Article 4 — success must be provable).
 
 pub mod records;
+pub mod spec;
 pub mod store;
 
 pub use records::{
     Artifact, AttemptRecord, CheckpointRecord, ConfigRevision, EffectRecord, EvidenceRecord,
-    LeaseRecord, PolicyDecision, RunRecord, RuntimeHealth, StepRecord, TaskRecord,
+    LeaseRecord, PolicyDecision, RunRecord, RuntimeHealth, ScheduleRecord, StepRecord, TaskRecord,
     VerificationResult,
 };
 pub use records::{ArtifactData, CacheData, EvidenceData, MemoryData, StateData};
+pub use spec::{SpecError, TaskSpec};
 pub use store::{EffectDecision, ReplaySummary, StateError, StateStore, TaskSubmission};

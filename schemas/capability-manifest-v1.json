@@ -34,7 +34,7 @@
         },
         "runtime": {
           "type": "string",
-          "enum": ["rust", "python", "powershell", "shell", "claude_code", "codex", "cursor", "openai_compatible", "llama_cpp", "native"]
+          "enum": ["rust", "python", "powershell", "shell", "claude_code", "codex", "cursor", "openai_compatible", "groq", "mistral", "nvidia", "llama_cpp", "native"]
         },
         "entrypoint": {
           "type": "object",

@@ -3,18 +3,32 @@
 //! Every command is mechanical. Nothing here consults an LLM, which is the point: the
 //! Phase 1 kernel must be fully operable without one.
 
-mod spec;
-
 use chrono::TimeDelta;
 use clap::{Parser, Subcommand};
-use pearl_core::{Clock, RuntimeProfile, SystemClock, TaskId, TaskState};
+use pearl_assurance::{
+    AssuranceCheck, AssuranceEngine, AssuranceSpec, CheckContext, CheckKind, CheckOutcome,
+    RuntimeCheckRunner,
+};
+use pearl_capabilities::CapabilityRegistry;
+use pearl_core::{Clock, RuntimeProfile, SystemClock, TaskId, TaskState, WorkerId};
+use pearl_executor::{
+    step_executor_fn, Checkpoint, CheckpointSink, Executor, ExecutorConfig, RuntimeStepExecutor,
+};
 use pearl_governance::{run_gate, CapabilityManifest};
 use pearl_lease::{LeaseConfig, LeaseManager};
+use pearl_process_supervisor::PlatformSupervisor;
 use pearl_queue::{RetryPolicy, WorkQueue};
+use pearl_runtime::{
+    family_of, AgentCliAdapter, ApiRuntimeAdapter, RuntimeAdapter, RuntimeFamily,
+    ScriptRuntimeAdapter, ScriptSpec,
+};
 use pearl_state::StateStore;
-use spec::TaskSpec;
+use pearl_state::{SpecError, TaskSpec};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// Fallback timeout for a capability whose manifest omits one.
+const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 
 /// Exit codes. Distinct so CI can tell a Constitution violation from a crash.
 mod exit {
@@ -74,6 +88,9 @@ enum Command {
     /// Workflow operations.
     #[command(subcommand)]
     Workflow(WorkflowCommand),
+    /// Verification: ask a machine verifier, or read what one already said.
+    #[command(subcommand)]
+    Verify(VerifyCommand),
     /// Report kernel health.
     Doctor,
 }
@@ -180,10 +197,54 @@ enum ScriptCommand {
 
 #[derive(Subcommand)]
 enum WorkflowCommand {
-    /// Validate a workflow definition file.
+    /// Compile a workflow definition, reporting every problem found.
     Validate {
         /// Path to the workflow YAML file.
         file: PathBuf,
+        /// Directory containing capability manifests.
+        #[arg(long, default_value = "capabilities")]
+        capabilities_path: PathBuf,
+    },
+    /// Compile and execute a workflow.
+    Run {
+        /// Path to the workflow YAML file.
+        file: PathBuf,
+        /// Task id to record the run under. Defaults to a timestamped id.
+        #[arg(long)]
+        task_id: Option<String>,
+        /// Directory containing capability manifests.
+        #[arg(long, default_value = "capabilities")]
+        capabilities_path: PathBuf,
+        /// Skip steps that already have a committed checkpoint.
+        #[arg(long)]
+        resume: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum VerifyCommand {
+    /// Show what has been verified about a task.
+    Task { task_id: String },
+    /// Run a verifier or a schema check against a document.
+    Run {
+        /// Verifier capability id, or a path to a verifier script.
+        #[arg(long)]
+        verifier: Option<String>,
+        /// JSON Schema name to validate against.
+        #[arg(long)]
+        schema: Option<String>,
+        /// The document, inline.
+        #[arg(long, conflicts_with = "input_file")]
+        input: Option<String>,
+        /// The document, from a file.
+        #[arg(long)]
+        input_file: Option<PathBuf>,
+        /// Directory containing capability manifests.
+        #[arg(long, default_value = "capabilities")]
+        capabilities_path: PathBuf,
+        /// Directory containing JSON Schemas.
+        #[arg(long, default_value = "schemas")]
+        schemas_path: PathBuf,
     },
 }
 
@@ -246,6 +307,7 @@ fn dispatch(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Capability(cmd) => capability(cli, cmd),
         Command::Script(cmd) => script(cli, cmd),
         Command::Workflow(cmd) => workflow(cli, cmd),
+        Command::Verify(cmd) => verify(cli, cmd),
         Command::Doctor => doctor(cli),
     }
 }
@@ -261,7 +323,7 @@ fn task(cli: &Cli, cmd: &TaskCommand) -> Result<u8, Box<dyn std::error::Error>> 
             // "the disk is full".
             let submission = match parsed.into_submission() {
                 Ok(s) => s,
-                Err(spec::SpecError::ConstitutionViolation { article, detail }) => {
+                Err(SpecError::ConstitutionViolation { article, detail }) => {
                     eprintln!("Constitution Article {article}: {detail}");
                     return Ok(exit::CONSTITUTION_VIOLATION);
                 }
@@ -664,9 +726,12 @@ fn constitution(cli: &Cli, cmd: &ConstitutionCommand) -> Result<u8, Box<dyn std:
 
 /// Loads manifests from a file or a directory of `.yaml`/`.yml` files.
 fn load_manifests(path: &Path) -> Result<Vec<CapabilityManifest>, Box<dyn std::error::Error>> {
+    // One parser, shared with the registry. Two loaders with different ideas of what a manifest
+    // file may contain is how `pearl constitution check` came to reject a directory the worker
+    // loads happily: §57 puts workflows under `capabilities/`, and only the registry knew.
     if path.is_file() {
         let source = std::fs::read_to_string(path)?;
-        return Ok(vec![CapabilityManifest::from_yaml(&source)?]);
+        return Ok(pearl_capabilities::parse_manifest_documents(&source, path)?);
     }
     if !path.exists() {
         return Err(format!("path '{}' does not exist", path.display()).into());
@@ -680,9 +745,10 @@ fn load_manifests(path: &Path) -> Result<Vec<CapabilityManifest>, Box<dyn std::e
 
     for file in paths {
         let source = std::fs::read_to_string(&file)?;
-        let manifest = CapabilityManifest::from_yaml(&source)
-            .map_err(|e| format!("{}: {e}", file.display()))?;
-        manifests.push(manifest);
+        manifests.extend(
+            pearl_capabilities::parse_manifest_documents(&source, &file)
+                .map_err(|e| format!("{}: {e}", file.display()))?,
+        );
     }
     Ok(manifests)
 }
@@ -793,100 +859,582 @@ fn script(cli: &Cli, cmd: &ScriptCommand) -> Result<u8, Box<dyn std::error::Erro
             input,
             capabilities_path,
         } => {
-            if !capabilities_path.exists() {
+            let registry = CapabilityRegistry::load_directory(capabilities_path)?;
+            let Some(capability) = registry.find_by_id(id) else {
                 eprintln!(
-                    "capabilities directory '{}' not found",
+                    "capability '{id}' is not in {}",
                     capabilities_path.display()
                 );
                 return Ok(exit::ERROR);
+            };
+
+            if !capability.manifest.runs_on_this_platform() {
+                eprintln!("capability '{id}' does not declare support for this platform");
+                return Ok(exit::ERROR);
             }
-            let manifests = load_manifests(capabilities_path)?;
-            let found = manifests.iter().find(|m| m.id == *id);
-            match found {
-                Some(manifest) => {
-                    if cli.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "action": "run",
-                                "capability_id": manifest.id,
-                                "runtime": manifest.execution.runtime.as_str(),
-                                "input": input,
-                                "status": "would_execute",
-                                "note": "Script execution requires pearl-runtime adapter; use `pearl-worker` for full execution."
-                            }))?
-                        );
-                    } else {
-                        println!("script run: {}", manifest.id);
-                        println!("  runtime: {}", manifest.execution.runtime.as_str());
-                        if let Some(inp) = input {
-                            println!("  input: {}", inp);
-                        }
-                        println!("  status: dry-run (full execution via pearl-worker)");
-                    }
-                    Ok(exit::OK)
+
+            let entrypoint = capability.resolve_entrypoint()?;
+            let payload = match input {
+                Some(text) => Some(serde_json::from_str::<serde_json::Value>(text)?),
+                None => None,
+            };
+            let spec = ScriptSpec {
+                runtime: capability.manifest.execution.runtime,
+                entrypoint: entrypoint.target,
+                args: entrypoint.args,
+                env: Default::default(),
+                cwd: None,
+                timeout: TimeDelta::try_seconds(
+                    capability.manifest.timeout_or(DEFAULT_TIMEOUT_SECONDS) as i64,
+                )
+                .unwrap_or_else(|| TimeDelta::try_seconds(60).expect("valid")),
+                input_payload: payload,
+            };
+
+            // Really executed, under the same supervisor a worker would use. A dry run that
+            // printed "would_execute" could not tell an operator whether the thing works,
+            // which is the only reason to run one capability by hand.
+            let result = match family_of(spec.runtime) {
+                RuntimeFamily::Mechanical => {
+                    ScriptRuntimeAdapter::new(PlatformSupervisor::default())
+                        .execute(&spec, &SystemClock)?
                 }
-                None => {
-                    eprintln!("capability '{}' not found", id);
-                    Ok(exit::ERROR)
+                RuntimeFamily::AgentCli(agent) => {
+                    AgentCliAdapter::new(agent, PlatformSupervisor::default())
+                        .execute(&spec, &SystemClock)?
+                }
+                RuntimeFamily::Api(provider) => {
+                    ApiRuntimeAdapter::new(provider).execute(&spec, &SystemClock)?
+                }
+            };
+
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "capability_id": capability.manifest.id,
+                        "runtime": spec.runtime.as_str(),
+                        "exit_status": result.exit_status,
+                        "duration_ms": result.duration.num_milliseconds(),
+                        "output": result.structured_output,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                    }))?
+                );
+            } else {
+                println!("capability   {}", capability.manifest.id);
+                println!("runtime      {}", spec.runtime.as_str());
+                println!("exit         {:?}", result.exit_status);
+                println!("duration     {}ms", result.duration.num_milliseconds());
+                if !result.stdout.trim().is_empty() {
+                    println!("\n{}", result.stdout.trim());
+                }
+                if !result.stderr.trim().is_empty() {
+                    eprintln!("{}", result.stderr.trim());
                 }
             }
+
+            // The capability's own verdict becomes the exit code, so a shell can act on it.
+            Ok(if result.is_success() {
+                exit::OK
+            } else {
+                exit::ERROR
+            })
+        }
+    }
+}
+
+/// `pearl verify` — runs a verifier or a schema check by hand.
+///
+/// The operator counterpart to what the worker does automatically. Article 8 says only a
+/// machine verifier may declare verification; this is how a human asks one, rather than
+/// forming an opinion.
+fn verify(cli: &Cli, cmd: &VerifyCommand) -> Result<u8, Box<dyn std::error::Error>> {
+    match cmd {
+        VerifyCommand::Task { task_id } => {
+            let store = StateStore::open(&cli.db)?;
+            let id = TaskId::parse(task_id.clone())?;
+            if store.get_task(&id)?.is_none() {
+                eprintln!("task '{task_id}' not found");
+                return Ok(exit::ERROR);
+            }
+            let results = store.verifications_for_task(&id)?;
+            let evidence = store.evidence_for_task(&id)?;
+
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "task_id": task_id,
+                        "verifications": results,
+                        "evidence": evidence,
+                    }))?
+                );
+            } else if results.is_empty() {
+                // Not the same as "verified": Article 2 makes the absence of a verdict a
+                // reportable state rather than a silent pass.
+                println!("no verification has been recorded for '{task_id}'");
+            } else {
+                for r in &results {
+                    println!(
+                        "{:<8} {:<40} {}",
+                        if r.passed { "pass" } else { "fail" },
+                        r.verifier_id,
+                        r.detail.as_deref().unwrap_or("")
+                    );
+                }
+                println!("\n{} evidence item(s)", evidence.len());
+            }
+
+            Ok(if results.iter().all(|r| r.passed) && !results.is_empty() {
+                exit::OK
+            } else {
+                exit::ERROR
+            })
+        }
+
+        VerifyCommand::Run {
+            verifier,
+            schema,
+            input,
+            input_file,
+            capabilities_path,
+            schemas_path,
+        } => {
+            let subject: serde_json::Value = match (input, input_file) {
+                (Some(text), _) => serde_json::from_str(text)?,
+                (None, Some(path)) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
+                (None, None) => {
+                    eprintln!("give --input or --input-file: a verifier with nothing to inspect has nothing to say");
+                    return Ok(exit::ERROR);
+                }
+            };
+
+            let mut checks = Vec::new();
+            if let Some(name) = schema {
+                checks.push(AssuranceCheck::new(
+                    format!("schema:{name}"),
+                    CheckKind::SchemaValidation {
+                        schema: name.clone(),
+                    },
+                    true,
+                ));
+            }
+            if let Some(id) = verifier {
+                // A capability id resolves through the registry; anything else is taken as a
+                // path, so an ad-hoc script can be tried without registering it first.
+                let path = CapabilityRegistry::load_directory(capabilities_path)
+                    .ok()
+                    .and_then(|registry| {
+                        registry
+                            .find_by_id(id)
+                            .and_then(|cap| cap.resolve_entrypoint().ok())
+                            .map(|resolved| resolved.target.to_string_lossy().to_string())
+                    })
+                    .unwrap_or_else(|| id.clone());
+                checks.push(AssuranceCheck::new(
+                    format!("verifier:{id}"),
+                    CheckKind::ScriptVerifier { script_path: path },
+                    true,
+                ));
+            }
+            if checks.is_empty() {
+                eprintln!("give --verifier or --schema");
+                return Ok(exit::ERROR);
+            }
+
+            let context = CheckContext::new(subject.clone(), schemas_path)
+                .with_verifier_input(serde_json::json!({ "result": subject }));
+            let runner =
+                RuntimeCheckRunner::new(PlatformSupervisor::default(), SystemClock, context);
+            let result = AssuranceEngine::new(pearl_assurance::runner_fn(runner))
+                .run(&AssuranceSpec::new(checks));
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                for detail in &result.details {
+                    println!(
+                        "{:<8} {:<40} {}",
+                        match &detail.outcome {
+                            CheckOutcome::Passed => "pass",
+                            CheckOutcome::Failed { .. } => "fail",
+                            CheckOutcome::Errored { .. } => "error",
+                        },
+                        detail.name,
+                        detail.outcome.reason().unwrap_or("")
+                    );
+                }
+                println!("\n{}", result.summary());
+            }
+
+            // Three outcomes, three exit codes: a check that could not run is not a check
+            // that failed, and a caller must be able to tell them apart (§26).
+            Ok(if result.passed {
+                exit::OK
+            } else if result.errored_count() > 0 {
+                exit::CONSTITUTION_VIOLATION
+            } else {
+                exit::ERROR
+            })
         }
     }
 }
 
 fn workflow(cli: &Cli, cmd: &WorkflowCommand) -> Result<u8, Box<dyn std::error::Error>> {
     match cmd {
-        WorkflowCommand::Validate { file } => {
-            if !file.exists() {
-                eprintln!("workflow file '{}' not found", file.display());
-                return Ok(exit::ERROR);
-            }
-            let source = std::fs::read_to_string(file)?;
-            // Basic YAML validation: parse as a generic YAML value.
-            let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&source);
-            match parsed {
-                Ok(value) => {
-                    // Check minimal required fields.
-                    let is_valid = value.get("id").is_some() || value.get("name").is_some();
+        WorkflowCommand::Validate {
+            file,
+            capabilities_path,
+        } => {
+            let (definition, compiled) = match compile(file, capabilities_path) {
+                Ok(pair) => pair,
+                Err(report) => {
                     if cli.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "file": file.display().to_string(),
-                                "valid_yaml": true,
-                                "has_identifier": is_valid,
-                                "status": if is_valid { "valid" } else { "warning: missing 'id' or 'name' field" },
-                            }))?
-                        );
+                        println!("{}", serde_json::to_string_pretty(&report)?);
                     } else {
-                        println!("workflow: {}", file.display());
-                        println!("  yaml: valid");
-                        if is_valid {
-                            println!("  structure: valid (has id/name)");
-                        } else {
-                            println!("  warning: workflow should have 'id' or 'name' field");
+                        eprintln!("workflow {} is not valid:", file.display());
+                        for problem in report["problems"].as_array().into_iter().flatten() {
+                            eprintln!("  {}", problem.as_str().unwrap_or_default());
                         }
                     }
-                    Ok(exit::OK)
+                    return Ok(exit::ERROR);
                 }
-                Err(e) => {
+            };
+
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "file": file.display().to_string(),
+                        "workflow": definition.name,
+                        "steps": compiled.execution_order.len(),
+                        "execution_order": compiled
+                            .execution_order
+                            .iter()
+                            .map(|s| s.id.clone())
+                            .collect::<Vec<_>>(),
+                        "status": "valid",
+                    }))?
+                );
+            } else {
+                println!("workflow     {}", definition.name);
+                println!("steps        {}", compiled.execution_order.len());
+                println!(
+                    "order        {}",
+                    compiled
+                        .execution_order
+                        .iter()
+                        .map(|s| s.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" → ")
+                );
+                println!("status       valid");
+            }
+            Ok(exit::OK)
+        }
+
+        WorkflowCommand::Run {
+            file,
+            task_id,
+            capabilities_path,
+            resume,
+        } => {
+            let (definition, compiled) = match compile(file, capabilities_path) {
+                Ok(pair) => pair,
+                Err(report) => {
+                    // Compilation is a gate, not advice: an invalid plan is never executed
+                    // (§30), so a caller cannot run a workflow that failed to compile.
                     if cli.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "file": file.display().to_string(),
-                                "valid_yaml": false,
-                                "error": e.to_string(),
-                            }))?
-                        );
+                        println!("{}", serde_json::to_string_pretty(&report)?);
                     } else {
-                        eprintln!("workflow validation failed: {}", e);
+                        eprintln!(
+                            "workflow {} did not compile; nothing was run",
+                            file.display()
+                        );
+                        for problem in report["problems"].as_array().into_iter().flatten() {
+                            eprintln!("  {}", problem.as_str().unwrap_or_default());
+                        }
                     }
-                    Ok(exit::ERROR)
+                    return Ok(exit::CONSTITUTION_VIOLATION);
+                }
+            };
+
+            let registry = CapabilityRegistry::load_directory(capabilities_path)?;
+            let mut store = StateStore::open(&cli.db)?;
+            let now = SystemClock.now();
+
+            // A workflow run is a task, so it gets the same durable record as any other work:
+            // a run, checkpoints, and a history that says what happened.
+            let id = TaskId::parse(task_id.clone().unwrap_or_else(|| {
+                format!("{}-{}", definition.name, now.format("%Y%m%dt%H%M%Sz"))
+            }))?;
+            if store.get_task(&id)?.is_none() {
+                store.create_task(
+                    pearl_state::TaskSubmission::new(
+                        id.clone(),
+                        definition.name.clone(),
+                        Some(pearl_core::PrecisionClass::P0),
+                        pearl_core::QualitySpec::mechanical(),
+                    ),
+                    now,
+                )?;
+                for state in [TaskState::Planning, TaskState::Planned, TaskState::Ready] {
+                    store.transition(&id, state, Some("workflow run".into()), None, now)?;
                 }
             }
+
+            // A task can only be claimed from READY. Rather than let the lease layer's error
+            // surface as "not claimable", say what state it is actually in and what that means:
+            // an interrupted run is resumable, a finished one is not.
+            let state = store
+                .get_task(&id)?
+                .map(|t| t.state)
+                .unwrap_or(TaskState::Ready);
+            match state {
+                TaskState::Ready => {}
+                TaskState::Blocked | TaskState::RetryWait => {
+                    store.transition(
+                        &id,
+                        TaskState::Ready,
+                        Some("re-admitted for a workflow run".into()),
+                        None,
+                        SystemClock.now(),
+                    )?;
+                }
+                other => {
+                    eprintln!(
+                        "task '{id}' is {other} and cannot be run again; give a new --task-id to run this workflow afresh"
+                    );
+                    if *resume {
+                        let done = store.checkpoints_for_task(&id)?.len();
+                        eprintln!("{done} step(s) already have a committed checkpoint");
+                    }
+                    return Ok(exit::ERROR);
+                }
+            }
+
+            let leases = LeaseManager::new(LeaseConfig::default(), SystemClock);
+            let lease = leases.claim(&mut store, &id, &WorkerId::new("cli:workflow"))?;
+            store.transition(&id, TaskState::Running, None, None, SystemClock.now())?;
+            let run = store.start_run(
+                &id,
+                &format!("workflow@{}", definition.name),
+                &compiled_hash(&compiled),
+                SystemClock.now(),
+            )?;
+
+            // Resume reads the committed checkpoints: §41 says only a committed checkpoint
+            // licenses the next step, and this is the other half of that promise.
+            let checkpoint = if *resume {
+                resume_from(&store, &id)?
+            } else {
+                None
+            };
+
+            let runner =
+                RuntimeStepExecutor::new(registry, PlatformSupervisor::default(), SystemClock)
+                    .with_payload(serde_json::json!({
+                        "task_id": id.as_str(),
+                        "workflow": definition.name,
+                    }));
+            let executor = Executor::new(ExecutorConfig::default(), step_executor_fn(runner));
+            let mut sink = StoreSink {
+                store: &mut store,
+                task_id: id.clone(),
+                run_id: run.run_id,
+                step_number: 0,
+            };
+            let result = executor.execute_with_sink(&compiled, checkpoint, &mut sink);
+
+            let outcome = if result.success {
+                pearl_events::RunOutcome::Success
+            } else {
+                pearl_events::RunOutcome::Failure
+            };
+            store.end_run(run.run_id, outcome, SystemClock.now())?;
+            // VERIFYING, then a verdict: a workflow that merely finished has not been verified,
+            // and this command does not pretend otherwise.
+            store.transition(&id, TaskState::Verifying, None, None, SystemClock.now())?;
+            store.transition(
+                &id,
+                if result.success {
+                    // No assurance was declared for an ad-hoc workflow run, so the honest
+                    // destination is UNVERIFIED even when every step succeeded (Article 2).
+                    TaskState::Unverified
+                } else {
+                    TaskState::Failed
+                },
+                Some(format!(
+                    "{} of {} step(s) succeeded",
+                    result.success_count(),
+                    result.records.len()
+                )),
+                None,
+                SystemClock.now(),
+            )?;
+            leases.release(&mut store, lease.lease_id)?;
+
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "task_id": id.as_str(),
+                        "run_id": run.run_id.to_string(),
+                        "success": result.success,
+                        "resumed": result.resumed,
+                        "steps": result.records,
+                    }))?
+                );
+            } else {
+                println!("task         {id}");
+                println!("run          {}", run.run_id);
+                if result.resumed {
+                    println!("resumed      from a committed checkpoint");
+                }
+                for record in &result.records {
+                    println!("  {:<24} {:?}", record.step_id, record.outcome);
+                }
+                println!(
+                    "\n{} of {} step(s) succeeded",
+                    result.success_count(),
+                    result.records.len()
+                );
+            }
+
+            Ok(if result.success {
+                exit::OK
+            } else {
+                exit::ERROR
+            })
         }
+    }
+}
+
+/// Loads and compiles a workflow, with the registry as the capability set.
+///
+/// Compilation is where §30 is enforced, so this is deliberately the only path to a runnable
+/// plan: passing the registry means a workflow naming a capability that does not exist fails
+/// here rather than at the step that needed it.
+type CompiledWorkflow = (
+    pearl_workflow::WorkflowDef,
+    pearl_plan_compiler::CompiledPlan,
+);
+
+fn compile(file: &Path, capabilities_path: &Path) -> Result<CompiledWorkflow, serde_json::Value> {
+    let problem = |detail: String| {
+        serde_json::json!({
+            "file": file.display().to_string(),
+            "status": "invalid",
+            "problems": [detail],
+        })
+    };
+
+    let source = std::fs::read_to_string(file)
+        .map_err(|e| problem(format!("{} could not be read: {e}", file.display())))?;
+    let definition =
+        pearl_workflow::WorkflowDef::from_yaml(&source).map_err(|e| problem(e.to_string()))?;
+
+    let known: std::collections::HashSet<String> =
+        CapabilityRegistry::load_directory(capabilities_path)
+            .map(|registry| registry.iter().map(|c| c.manifest.id.clone()).collect())
+            .unwrap_or_default();
+    // A step is verified when a `verify` step depends on it. Only verify steps count: taking
+    // any dependency as verification would let one ordinary step "verify" another simply by
+    // running after it.
+    let verified: std::collections::HashSet<String> = definition
+        .steps
+        .iter()
+        .filter(|s| s.step_type == pearl_workflow::StepType::Verify)
+        .flat_map(|s| s.depends_on.clone())
+        .collect();
+
+    let engine = pearl_workflow::WorkflowEngine::with_config(pearl_plan_compiler::CompilerConfig {
+        known_capabilities: known,
+        verified_steps: verified,
+    });
+
+    match engine.compile_workflow(&definition) {
+        Ok(compiled) => Ok((definition, compiled)),
+        Err(pearl_workflow::WorkflowError::CompileError { errors }) => Err(serde_json::json!({
+            "file": file.display().to_string(),
+            "status": "invalid",
+            "problems": errors,
+        })),
+        Err(e) => Err(problem(e.to_string())),
+    }
+}
+
+/// A stable digest of a compiled plan, recorded as the run's config hash (Article 10).
+fn compiled_hash(compiled: &pearl_plan_compiler::CompiledPlan) -> String {
+    use sha2::{Digest, Sha256};
+    let joined = compiled
+        .execution_order
+        .iter()
+        .map(|s| format!("{}:{}", s.id, s.capability))
+        .collect::<Vec<_>>()
+        .join("|");
+    hex::encode(Sha256::digest(joined.as_bytes()))
+}
+
+/// Rebuilds an executor checkpoint from what was committed.
+fn resume_from(
+    store: &StateStore,
+    task_id: &TaskId,
+) -> Result<Option<Checkpoint>, Box<dyn std::error::Error>> {
+    let committed = store.checkpoints_for_task(task_id)?;
+    if committed.is_empty() {
+        return Ok(None);
+    }
+    let mut checkpoint = Checkpoint::new();
+    for record in committed {
+        checkpoint.completed_steps.insert(record.label);
+    }
+    Ok(Some(checkpoint))
+}
+
+/// Commits each step's completion to the store before the next one starts — §41.
+struct StoreSink<'a> {
+    store: &'a mut StateStore,
+    task_id: TaskId,
+    run_id: pearl_core::RunId,
+    step_number: u32,
+}
+
+impl CheckpointSink for StoreSink<'_> {
+    fn commit(
+        &mut self,
+        record: &pearl_executor::StepRecord,
+        _checkpoint: &Checkpoint,
+    ) -> Result<(), String> {
+        self.step_number += 1;
+        let status = match &record.outcome {
+            pearl_executor::StepOutcome::Success { .. } => "success",
+            pearl_executor::StepOutcome::Failed { .. } => "failed",
+            pearl_executor::StepOutcome::Skipped { .. } => "skipped",
+        };
+        self.store
+            .record_step(
+                &pearl_state::StepRecord::new(
+                    self.run_id,
+                    self.step_number,
+                    &record.step_id,
+                    format!("{:?}", record.outcome),
+                    status,
+                )
+                .started(record.started_at)
+                .completed(record.completed_at),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // Only a successful step is a resume point. Committing a failed one would make resume
+        // skip the step that needs redoing.
+        if matches!(record.outcome, pearl_executor::StepOutcome::Success { .. }) {
+            self.store
+                .commit_checkpoint(&self.task_id, &record.step_id, None, record.completed_at)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }
 

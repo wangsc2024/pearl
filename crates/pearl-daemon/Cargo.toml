@@ -5,11 +5,28 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "PEARL daemon: long-running governance and scheduling process."
+description = "PEARL daemon: fires schedules, reclaims leases, promotes retries and runs the governance loop."
+
+[[bin]]
+name = "pearl-daemon"
+path = "src/main.rs"
 
 [dependencies]
 pearl-core.workspace = true
 pearl-governance.workspace = true
+pearl-lease.workspace = true
+pearl-queue.workspace = true
 pearl-scheduler.workspace = true
+pearl-state.workspace = true
+
 chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+pearl-events.workspace = true
+tempfile.workspace = true

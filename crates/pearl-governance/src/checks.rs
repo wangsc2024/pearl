@@ -8,7 +8,7 @@
 //! idempotency key or it does not, and no amount of prose in a PR description changes the
 //! verdict.
 
-use crate::manifest::{CapabilityManifest, CapabilityType, OnError};
+use crate::manifest::{CapabilityManifest, CapabilityType, ExecutionKind, OnError};
 use pearl_core::QualitySpec;
 
 /// Which article a finding relates to.
@@ -329,10 +329,33 @@ pub fn check_task_exactness_has_verifier(
     Vec::new()
 }
 
+/// A capability that executes something should say what.
+///
+/// A warning rather than a violation: declaring a capability before writing it is a legitimate
+/// way to design a workflow, and the registry already refuses to *run* one with no entrypoint.
+/// What is not legitimate is the declaration reading as though an implementation exists, which
+/// is what this surfaces.
+pub fn check_declares_an_entrypoint(m: &CapabilityManifest) -> Vec<Finding> {
+    let runs_a_file = matches!(
+        m.execution.kind,
+        ExecutionKind::Script | ExecutionKind::Tool | ExecutionKind::Agent
+    );
+    if !runs_a_file || m.entrypoint().is_some() {
+        return Vec::new();
+    }
+    vec![Finding::warning(
+        1,
+        "check_declares_an_entrypoint",
+        &m.id,
+        "declares no execution.entrypoint, so nothing can run it. Add one, or say plainly in the description that it is not implemented.",
+    )]
+}
+
 /// Runs every manifest check.
 pub fn check_manifest(m: &CapabilityManifest) -> Vec<Finding> {
     let mut findings = Vec::new();
     findings.extend(check_no_llm_for_deterministic(m));
+    findings.extend(check_declares_an_entrypoint(m));
     findings.extend(check_effect_has_idempotency_key(m));
     findings.extend(check_guard_fail_closed(m));
     findings.extend(check_verifier_declares_schemas(m));
@@ -371,7 +394,8 @@ mod tests {
             capability_type: CapabilityType::Script,
             functional_kind: None,
             description: Some("example".into()),
-            execution: Execution::new(ExecutionKind::Script, Runtime::Python),
+            // A clean manifest names what runs it, so the entrypoint check has nothing to say.
+            execution: Execution::script(Runtime::Python, "example.py"),
             retry: None,
             quality: Quality {
                 deterministic: true,

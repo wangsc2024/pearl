@@ -19,6 +19,46 @@ pub struct PlanStep {
     pub precision_class: PrecisionClass,
     /// Maximum time allowed for this step.
     pub timeout: Duration,
+    /// Whether this step's result must be exact — §22.
+    ///
+    /// This, not the precision class, is what obliges a verifier. The two are independent: a
+    /// P0 step can be a best-effort probe whose result nobody depends on, and a P2 step can be
+    /// the one thing that must be right. Deriving the obligation from the class made every
+    /// mechanical step require a verifier, which is stricter than §30 says and made ordinary
+    /// workflows impossible to compile.
+    #[serde(default)]
+    pub exactness_required: bool,
+}
+
+impl PlanStep {
+    /// A step with no exactness demand.
+    pub fn new(
+        id: impl Into<String>,
+        capability: impl Into<String>,
+        precision_class: PrecisionClass,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            capability: capability.into(),
+            depends_on: Vec::new(),
+            precision_class,
+            timeout,
+            exactness_required: false,
+        }
+    }
+
+    /// Declares that this step's result must be exact, and therefore verified.
+    pub fn requiring_exactness(mut self) -> Self {
+        self.exactness_required = true;
+        self
+    }
+
+    /// Declares dependencies.
+    pub fn after(mut self, deps: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.depends_on = deps.into_iter().map(Into::into).collect();
+        self
+    }
 }
 
 /// Resource budget for plan generation.
@@ -185,6 +225,7 @@ mod tests {
             depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
             precision_class: class,
             timeout: Duration::from_secs(30),
+            exactness_required: false,
         }
     }
 

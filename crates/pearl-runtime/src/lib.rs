@@ -37,11 +37,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub mod agent_adapters;
+pub mod api_adapters;
+pub mod family;
 pub mod programs;
+pub mod prompt;
 
-pub use agent_adapters::{
-    agent_adapter_for, ClaudeCodeAdapter, CodexAdapter, CursorAdapter, LlamaCppAdapter,
-};
+pub use agent_adapters::{agent_adapter_for, credential_vars, AgentCliAdapter};
+pub use api_adapters::ApiRuntimeAdapter;
+pub use family::{family_of, AgentCli, ApiProvider, RuntimeFamily};
 
 // ---------------------------------------------------------------------------
 // Errors

@@ -81,6 +81,11 @@ hex = "0.4"
 # verifier that fetches a remote schema would put the network inside a verification path.
 jsonschema = { version = "0.49", default-features = false }
 
+# HTTP for the OpenAI-compatible API runtimes (SS 37). Blocking, because every execution path
+# in PEARL is synchronous and an async runtime would be a large dependency for no gain.
+# rustls rather than native-tls: no OpenSSL build dependency on any platform.
+ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }
+
 # Errors
 thiserror = "2.0"
 
