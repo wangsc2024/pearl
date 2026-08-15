@@ -30,6 +30,7 @@ fn ready_store(clock: &TestClock) -> (StateStore, TaskId) {
                 task_type: "digest".into(),
                 precision_class: None,
                 quality: QualitySpec::mechanical(),
+                plan: Default::default(),
             },
             now,
         )
@@ -105,6 +106,7 @@ fn only_ready_tasks_are_claimable() {
                 task_type: "digest".into(),
                 precision_class: None,
                 quality: QualitySpec::mechanical(),
+                plan: Default::default(),
             },
             clock.now(),
         )
@@ -426,6 +428,7 @@ fn several_dead_workers_are_all_reclaimed() {
                     task_type: "digest".into(),
                     precision_class: None,
                     quality: QualitySpec::mechanical(),
+                    plan: Default::default(),
                 },
                 now,
             )
@@ -461,6 +464,7 @@ fn recovery_survives_a_process_restart() {
                     task_type: "digest".into(),
                     precision_class: None,
                     quality: QualitySpec::mechanical(),
+                    plan: Default::default(),
                 },
                 now,
             )

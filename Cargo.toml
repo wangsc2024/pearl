@@ -76,6 +76,11 @@ rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# JSON Schema validation, so "validated against its schema" is a machine fact rather than
+# a claim (Articles 2, 8). Default features are off deliberately: they pull reqwest, and a
+# verifier that fetches a remote schema would put the network inside a verification path.
+jsonschema = { version = "0.49", default-features = false }
+
 # Errors
 thiserror = "2.0"
 
@@ -88,6 +93,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Unix process-group signalling for tree kill (Article 9)
 nix = { version = "0.29", features = ["signal", "process"] }
+
+# Windows job objects: the platform's only reliable whole-tree containment (Article 9)
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    # CreateJobObjectW takes SECURITY_ATTRIBUTES, and windows-sys gates a function on
+    # every feature its signature mentions.
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 # Test-only
 tempfile = "3.13"

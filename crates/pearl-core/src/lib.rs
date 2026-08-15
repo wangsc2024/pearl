@@ -20,6 +20,7 @@ pub mod config;
 pub mod evidence;
 pub mod idempotency;
 pub mod ids;
+pub mod plan;
 pub mod precision;
 pub mod redactor;
 pub mod task_state;
@@ -33,10 +34,15 @@ pub use idempotency::{IdempotencyKey, IdempotencyKeyError, IdempotencyTemplate};
 pub use ids::{
     AttemptId, CheckpointId, EventId, InvalidTaskId, LeaseId, RunId, TaskId, TraceId, WorkerId,
 };
+pub use plan::{AssuranceStep, TaskPlan};
 pub use precision::{ExactnessGate, PrecisionClass, QualitySpec};
 pub use redactor::SecretRedactor;
 pub use task_state::{TaskState, TransitionError};
 
 /// Event ledger schema version. Bumped when the event vocabulary changes shape;
 /// replay compatibility is asserted per version (ADR-0001).
-pub const EVENT_SCHEMA_VERSION: u32 = 1;
+///
+/// v2 added [`plan::TaskPlan`] to `task.created`. The field deserializes to an empty plan
+/// when absent, so a v1 ledger still replays — the version is recorded to make the change
+/// visible in the ledger, not to gate reading it.
+pub const EVENT_SCHEMA_VERSION: u32 = 2;

@@ -4,9 +4,12 @@ id: effect.notify
 version: 1
 type: tool
 description: Sends a notification to a channel.
+kind: effect
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: notify.py
 quality:
   deterministic: false
 risk:
@@ -17,3 +20,7 @@ platform:
   windows: true
   linux: true
 timeout_seconds: 30
+retry:
+  # Retrying is safe only because the ledger deduplicates on the idempotency key first;
+  # without that gate this would have to be max_attempts: 1.
+  max_attempts: 3

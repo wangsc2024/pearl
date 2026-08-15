@@ -21,12 +21,7 @@ fn task_id(s: &str) -> TaskId {
 }
 
 fn submission(id: &str, quality: QualitySpec) -> TaskSubmission {
-    TaskSubmission {
-        task_id: task_id(id),
-        task_type: "digest".into(),
-        precision_class: Some(PrecisionClass::P1),
-        quality,
-    }
+    TaskSubmission::new(task_id(id), "digest", Some(PrecisionClass::P1), quality)
 }
 
 fn machine_evidence() -> EvidenceSet {

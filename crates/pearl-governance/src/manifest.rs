@@ -114,10 +114,117 @@ impl Runtime {
     }
 }
 
+/// Functional classification within the registry — §27.
+///
+/// Separate from [`CapabilityType`] because the two answer different questions: the type
+/// says how the registry treats it, this says what it does to the world. A `script` that
+/// is an `effect` needs an idempotency key; a `script` that is a `collector` does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionalKind {
+    Collector,
+    Transformer,
+    Validator,
+    Verifier,
+    Guard,
+    Effect,
+    Repair,
+    Migration,
+    Diagnostic,
+}
+
+impl FunctionalKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FunctionalKind::Collector => "collector",
+            FunctionalKind::Transformer => "transformer",
+            FunctionalKind::Validator => "validator",
+            FunctionalKind::Verifier => "verifier",
+            FunctionalKind::Guard => "guard",
+            FunctionalKind::Effect => "effect",
+            FunctionalKind::Repair => "repair",
+            FunctionalKind::Migration => "migration",
+            FunctionalKind::Diagnostic => "diagnostic",
+        }
+    }
+}
+
+/// Where the executable actually is — §25.
+///
+/// Without this the registry can name a capability but not run it, which is how a
+/// capability id ends up standing in for a script path and the router hands the executor
+/// something it cannot execute.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entrypoint {
+    /// An importable module path, for runtimes that take one (`python -m`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// A compiled binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    /// A script file, relative to the manifest that declares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// Fixed arguments always passed to the entrypoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+impl Entrypoint {
+    /// The declared target, whichever form it took.
+    ///
+    /// Precedence is script, then binary, then module: the most specific declaration wins,
+    /// so a manifest that names both is not silently resolved to the vaguer one.
+    pub fn target(&self) -> Option<&str> {
+        self.script
+            .as_deref()
+            .or(self.binary.as_deref())
+            .or(self.module.as_deref())
+    }
+
+    /// Whether the target is a module rather than a filesystem path.
+    pub fn is_module(&self) -> bool {
+        self.script.is_none() && self.binary.is_none() && self.module.is_some()
+    }
+}
+
+/// Retry allowance — §25.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retry {
+    pub max_attempts: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Execution {
     pub kind: ExecutionKind,
     pub runtime: Runtime,
+    /// Where the code lives. Optional because agent and human-gate capabilities have no
+    /// file to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Entrypoint>,
+}
+
+impl Execution {
+    /// An execution declaration with no entrypoint, for capabilities that are not files.
+    pub fn new(kind: ExecutionKind, runtime: Runtime) -> Self {
+        Self {
+            kind,
+            runtime,
+            entrypoint: None,
+        }
+    }
+
+    /// An execution declaration naming a script file.
+    pub fn script(runtime: Runtime, script: impl Into<String>) -> Self {
+        Self {
+            kind: ExecutionKind::Script,
+            runtime,
+            entrypoint: Some(Entrypoint {
+                script: Some(script.into()),
+                ..Entrypoint::default()
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +275,9 @@ pub struct CapabilityManifest {
     pub version: u32,
     #[serde(rename = "type")]
     pub capability_type: CapabilityType,
+    /// Functional classification (§27). Optional so existing manifests keep parsing.
+    #[serde(rename = "kind", default, skip_serializing_if = "Option::is_none")]
+    pub functional_kind: Option<FunctionalKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub execution: Execution,
@@ -178,6 +288,8 @@ pub struct CapabilityManifest {
     pub schemas: Schemas,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<Retry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<OnError>,
 }
@@ -204,6 +316,36 @@ impl CapabilityManifest {
     /// a copy-paste mistake worth catching.
     pub fn runs_anywhere(&self) -> bool {
         self.platform.windows || self.platform.linux
+    }
+
+    /// Whether this capability runs on the platform executing this code.
+    ///
+    /// Checked before dispatch: routing a Linux-only script to a Windows worker produces a
+    /// confusing spawn failure instead of an honest "not supported here".
+    pub fn runs_on_this_platform(&self) -> bool {
+        if cfg!(windows) {
+            self.platform.windows
+        } else {
+            self.platform.linux
+        }
+    }
+
+    /// The declared entrypoint, if any.
+    pub fn entrypoint(&self) -> Option<&Entrypoint> {
+        self.execution.entrypoint.as_ref()
+    }
+
+    /// The retry allowance, defaulting to a single attempt.
+    ///
+    /// One attempt is the safe default: a capability that has not said it is retry-safe
+    /// must not be retried by assumption.
+    pub fn max_attempts(&self) -> u32 {
+        self.retry.map_or(1, |r| r.max_attempts.max(1))
+    }
+
+    /// The declared timeout, or `fallback` when the manifest omits one.
+    pub fn timeout_or(&self, fallback: u64) -> u64 {
+        self.timeout_seconds.filter(|s| *s > 0).unwrap_or(fallback)
     }
 }
 

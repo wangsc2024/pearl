@@ -3,9 +3,12 @@ id: verifier.task-result
 version: 1
 type: verifier
 description: Validates a task result document against its declared output schema.
+kind: verifier
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: verify_task_result.py
 quality:
   # A verdict that varied between runs could not establish verification.
   deterministic: true
@@ -18,3 +21,5 @@ schemas:
   input: task-spec-v1
   output: verification-result-v1
 timeout_seconds: 60
+retry:
+  max_attempts: 2

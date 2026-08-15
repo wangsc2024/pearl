@@ -5,15 +5,35 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "PEARL worker: task execution engine that pulls from the queue and runs scripts."
+description = "PEARL worker: claims tasks, executes capabilities, verifies mechanically, records evidence."
+
+[[bin]]
+name = "pearl-worker"
+path = "src/main.rs"
 
 [dependencies]
+pearl-assurance.workspace = true
+pearl-capabilities.workspace = true
 pearl-core.workspace = true
+pearl-events.workspace = true
+pearl-governance.workspace = true
+pearl-lease.workspace = true
+pearl-policy.workspace = true
+pearl-process-supervisor.workspace = true
+pearl-queue.workspace = true
+pearl-router.workspace = true
 pearl-runtime.workspace = true
 pearl-state.workspace = true
-pearl-governance.workspace = true
+
 chrono.workspace = true
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

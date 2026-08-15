@@ -1,12 +1,17 @@
 # P0 mechanical scoring. Article 1 forbids routing this to an agent: the formula is
 # fully specified, so there is nothing for a model to decide.
 id: script.task-score
-version: 1
+version: 2
 type: script
+kind: transformer
 description: Computes a task priority score from a fixed weighted formula.
 execution:
   kind: script
-  runtime: rust
+  runtime: python
+  entrypoint:
+    # Relative to this manifest: a capability's location is a property of the capability,
+    # not of the directory the worker happens to be started from.
+    script: task_score.py
 quality:
   deterministic: true
 risk:
@@ -14,6 +19,7 @@ risk:
 platform:
   windows: true
   linux: true
-schemas:
-  output: verification-result-v1
 timeout_seconds: 10
+retry:
+  # Pure computation with no side effect, so a retry is free and safe.
+  max_attempts: 2

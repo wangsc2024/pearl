@@ -12,7 +12,9 @@ fn binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("test exe path");
     path.pop(); // deps/
     path.pop(); // debug/
-    path.push("pearl");
+                // `std::env::consts::EXE_SUFFIX` rather than a bare name: on Windows the binary is
+                // `pearl.exe`, and hard-coding the Unix form made every CLI test fail there.
+    path.push(format!("pearl{}", std::env::consts::EXE_SUFFIX));
     assert!(
         path.exists(),
         "pearl binary not found at {}",

@@ -1,0 +1,21 @@
+# Capability permissions -- 系統開發需求書 §45, Constitution Article 10 (single SoT).
+#
+# Evaluated first-match-wins, top to bottom. A capability with no matching rule is
+# DENIED: this file is the allow-list, and silence is not consent.
+#
+# `capability` accepts:
+#   all              every capability
+#   script.*         prefix wildcard
+#   script.foo       exact capability id
+#
+# NOTE: this is the *permission* layer (may this capability be invoked at all).
+# It does not replace Guards (Article 7, fail-closed) or the Exactness Gate
+# (Article 2): a permitted capability still cannot claim VERIFIED_SUCCESS without
+# mechanical verification.
+#
+# WARNING: `capability: all / effect: allow` disables capability gating entirely.
+# That is appropriate for local development and CI, not for a production profile.
+
+rules:
+  - capability: all
+    effect: allow

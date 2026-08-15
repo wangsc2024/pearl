@@ -15,4 +15,7 @@
 
 mod registry;
 
-pub use registry::{CapabilityRegistry, RegisteredCapability, RegistryError};
+pub use registry::{
+    parse_manifest_documents, CapabilityRegistry, RegisteredCapability, RegistryError,
+    ResolvedEntrypoint,
+};
