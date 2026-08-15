@@ -610,6 +610,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pearl-runtime"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pearl-core",
+ "pearl-governance",
+ "pearl-process-supervisor",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "pearl-state"
 version = "0.1.0"
 dependencies = [

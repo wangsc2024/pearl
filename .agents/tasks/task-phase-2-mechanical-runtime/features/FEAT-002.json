@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Implement pearl-runtime crate: script runtime adapter contracts and implementations for Rust/Python/PowerShell/Shell backends. Each adapter wraps pearl-process-supervisor to execute scripts with the Article 9 contract (spawn/status/cancel/timeout/cleanup). The adapter layer adds: structured output parsing (JSON stdout contract), environment filtering, timeout enforcement, and exit-code-to-outcome mapping. Reference: daily_rust src/process/mod.rs pattern and the ProcessSupervisor trait already in pearl-process-supervisor.",
+  "status": "in_progress",
+  "steps": [
+    "Create crates/pearl-runtime/Cargo.toml depending on pearl-core, pearl-process-supervisor, serde, serde_json, thiserror, chrono. Use workspace.dependencies.",
+    "Add pearl-runtime to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-runtime = { path = 'crates/pearl-runtime' } to [workspace.dependencies].",
+    "Create crates/pearl-runtime/src/lib.rs with module doc explaining this implements Article 9 runtime contracts and Article 1 script-first execution.",
+    "Define RuntimeAdapter trait with methods: execute(script_spec) -> RuntimeResult, validate(script_spec) -> Result<(),ValidationError> (pre-checks the script exists and runtime is available), supports_runtime(Runtime) -> bool.",
+    "Define ScriptSpec struct: runtime (Runtime from pearl-governance::manifest), entrypoint (PathBuf), args (Vec<String>), env (BTreeMap<String,String>), cwd (Option<PathBuf>), timeout (TimeDelta), input_payload (Option<serde_json::Value>).",
+    "Define RuntimeResult: exit_status (ExitStatus from pearl-process-supervisor), stdout (String), stderr (String), duration (TimeDelta), structured_output (Option<serde_json::Value>) parsed from stdout JSON.",
+    "Implement ScriptRuntimeAdapter that wraps PlatformSupervisor and handles: (1) building CommandSpec from ScriptSpec (choosing python3/pwsh/bash/the binary based on Runtime), (2) optionally piping input_payload as a temp file or env var, (3) collecting stdout/stderr after process completes, (4) attempting JSON parse of stdout for structured_output.",
+    "Implement runtime-specific program resolution: Python -> 'python3', PowerShell -> 'pwsh', Shell -> 'bash' or 'sh', Rust -> direct binary path from entrypoint, Native -> direct binary.",
+    "Write tests: test that ScriptSpec builds correct CommandSpec for each runtime type, test JSON stdout parsing, test timeout handling logic, test that RuntimeResult correctly reports success/failure. Use mock/unit tests (not actual process spawning for most tests).",
+    "Ensure cargo test --workspace passes, clippy -D warnings clean, fmt clean."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p pearl-runtime succeeds",
+    "All tests in pearl-runtime pass",
+    "ScriptRuntimeAdapter correctly maps Runtime::Python to 'python3' command",
+    "RuntimeResult parses JSON stdout into structured_output",
+    "cargo clippy --workspace --all-targets -- -D warnings passes",
+    "cargo fmt --all --check passes"
+  ],
+  "verification": [
+    "cargo test -p pearl-runtime",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all --check"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
