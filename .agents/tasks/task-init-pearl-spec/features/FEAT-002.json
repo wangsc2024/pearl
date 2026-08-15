@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "docs",
   "description": "Perform system analysis based on 系統開發需求書.md by reading reference projects (daily-digest-prompt, daily_agent, AgentFlow-Notify, deepseek-harness) and producing a comprehensive analysis document that maps PEARL v2 requirements to patterns found in reference codebases.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Read key files from reference projects to gather evidence for the analysis: (1) deepseek-harness: packages/workflow/workflow/src/index.ts and types.ts for event lifecycle patterns, packages/jobs/jobs/src/index.ts for durable job patterns, packages/guard/ for guard patterns, packages/schedule/ for scheduler patterns; (2) daily-digest-prompt: config/scoring.yaml for SoT pattern, hooks/ for guard implementation, workflows/index.yaml for workflow patterns, a sample skill folder for capability manifest pattern; (3) daily_agent: crates/da-core/src/ for Rust core patterns (state, breaker, config), crates/da-runtime/src/ for runtime patterns; (4) AgentFlow-Notify: speckit.constitution for governance pattern, src/ for Rust service patterns",
     "Create /projects/sandbox/pearl/docs/system-analysis.md with the following sections: (A) Executive Summary - what PEARL v2 aims to achieve based on the spec; (B) Reference Architecture Mapping - how each reference project maps to PEARL v2 components (deepseek-harness event lifecycle -> Event Ledger, workflow engine -> Workflow Engine, guard/timeout -> Guard Engine; DDP YAML configs -> SoT/Config Resolution, hooks -> Guard primitives, scoring -> P0 Mechanical, skills/tools -> Capability Registry; daily_agent Rust crates -> crate structure pattern, breaker/state/config -> core primitives; AgentFlow-Notify constitution -> Constitution governance model); (C) Gap Analysis - what exists in references vs what PEARL v2 needs to build new; (D) Recommended Implementation Priorities based on the Phase 0-8 migration strategy; (E) Technology Decisions - Rust workspace structure, SQLite choice, event sourcing approach",
@@ -22,5 +22,5 @@
     "Run: grep -c 'daily_agent' /projects/sandbox/pearl/docs/system-analysis.md (should be > 3 references)"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Created comprehensive system analysis (docs/system-analysis.md) with 5 sections mapping PEARL v2 to reference projects, and architecture reference map (docs/architecture-reference-map.md) with 65 mapped components. Key findings: 16 components can be direct-ported from daily_agent, 26 need adaptation from reference patterns, and 9 must be built new (SQLite Event Ledger, Precision Decision Engine, Plan Compiler, Assurance Engine, etc.)."
 }
