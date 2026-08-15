@@ -1,0 +1,21 @@
+[package]
+name = "pearl-state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PEARL materialized state: task/run/attempt tables projected from the event ledger."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-events.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

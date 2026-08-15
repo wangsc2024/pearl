@@ -1,0 +1,20 @@
+[package]
+name = "pearl-queue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PEARL durable work queue: claim, retry with backoff, and dead-lettering."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-events.workspace = true
+pearl-state.workspace = true
+pearl-lease.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

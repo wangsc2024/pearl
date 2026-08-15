@@ -1,0 +1,16 @@
+[package]
+name = "pearl-plan-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plan Compiler: validates plans before execution -- DAG checks, capability existence, budget (SS 30)."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-planner.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

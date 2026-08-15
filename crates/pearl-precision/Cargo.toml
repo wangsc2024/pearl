@@ -1,0 +1,17 @@
+[package]
+name = "pearl-precision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Precision Decision Engine: classifies tasks as P0/P1/P2/P3 before execution (Article 1, Article 11)."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-governance.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_yaml.workspace = true

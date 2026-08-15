@@ -1,0 +1,31 @@
+[package]
+name = "pearl-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PEARL command line interface."
+
+[[bin]]
+name = "pearl"
+path = "src/main.rs"
+
+[dependencies]
+pearl-core.workspace = true
+pearl-events.workspace = true
+pearl-state.workspace = true
+pearl-lease.workspace = true
+pearl-queue.workspace = true
+pearl-governance.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

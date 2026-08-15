@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event-envelope-v1.json",
+  "title": "PEARL Event Envelope v1",
+  "description": "Append-only ledger record (Section 42). Historical events are never rewritten; correction is expressed as a new event.",
+  "type": "object",
+  "required": ["id", "schema_version", "occurred_at", "trace_id", "event_type"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "UUIDv7 - time-sortable, so ledger order needs no separate sequence counter."
+    },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "trace_id": { "type": "string", "description": "Correlates every event of one logical task." },
+    "task_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "attempt_id": { "type": "string" },
+    "worker_id": { "type": "string" },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "task.created", "task.planned", "task.leased", "task.started",
+        "task.state_changed", "task.completed", "task.failed", "task.cancelled",
+        "run.started", "run.ended",
+        "attempt.started", "attempt.ended",
+        "step.started", "step.completed",
+        "script.started", "script.completed",
+        "agent.started", "agent.completed",
+        "verification.started", "verification.passed", "verification.failed",
+        "effect.requested", "effect.committed", "effect.deduplicated",
+        "lease.acquired", "lease.renewed", "lease.expired", "lease.released",
+        "checkpoint.committed",
+        "evidence.stored"
+      ]
+    },
+    "payload": { "type": "object" }
+  }
+}

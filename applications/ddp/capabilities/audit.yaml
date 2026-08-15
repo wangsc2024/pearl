@@ -1,0 +1,89 @@
+# Capability manifests for the System Audit workflow
+
+---
+id: script.manifest-validator
+version: 1
+type: script
+description: Validates all capability manifests against Constitution rules.
+execution:
+  kind: script
+  runtime: rust
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 60
+
+---
+id: script.constitution-gate
+version: 1
+type: script
+description: Runs Constitution CI gate checks on the codebase.
+execution:
+  kind: script
+  runtime: rust
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: script.health-probe
+version: 1
+type: script
+description: Probes system health metrics (uptime, resource usage, queue depth).
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: script.audit-report
+version: 1
+type: script
+description: Compiles a structured audit report from check results.
+execution:
+  kind: script
+  runtime: rust
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 30
+
+---
+id: verifier.audit-report-schema
+version: 1
+type: verifier
+description: Validates audit report against audit-report-v1 schema.
+execution:
+  kind: script
+  runtime: python
+quality:
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+schemas:
+  input: audit-report-v1
+  output: verification-result-v1
+timeout_seconds: 10

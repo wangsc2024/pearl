@@ -1,0 +1,20 @@
+[package]
+name = "pearl-capabilities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Capability Manifest Registry: indexes capabilities for script-first routing (Article 1)."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-governance.workspace = true
+pearl-precision.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

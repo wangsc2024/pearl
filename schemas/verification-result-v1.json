@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verification-result-v1.json",
+  "title": "PEARL Verification Result v1",
+  "description": "The only accepted output shape for a Machine Verifier. Article 8: the verifier decides, not the agent. Written to stdout as machine JSON only (Section 26).",
+  "type": "object",
+  "required": ["status", "checks"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "error"],
+      "description": "pass = verified. fail = verifier ran and rejected. error = verifier could not decide (never treated as pass)."
+    },
+    "verifier": {
+      "type": "string",
+      "description": "Capability id of the verifier that produced this result."
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "description": "At least one check must be reported. An empty check list cannot establish verification.",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "fail", "skip"] },
+          "detail": { "type": "string" },
+          "expected": {},
+          "actual": {}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "evidence-v1.json" }
+    },
+    "duration_ms": { "type": "integer", "minimum": 0 }
+  }
+}

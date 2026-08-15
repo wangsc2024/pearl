@@ -1,0 +1,20 @@
+# A Machine Verifier: the only thing permitted to declare verification passed (Article 8).
+id: verifier.task-result
+version: 1
+type: verifier
+description: Validates a task result document against its declared output schema.
+execution:
+  kind: script
+  runtime: python
+quality:
+  # A verdict that varied between runs could not establish verification.
+  deterministic: true
+risk:
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+schemas:
+  input: task-spec-v1
+  output: verification-result-v1
+timeout_seconds: 60

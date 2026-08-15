@@ -1,0 +1,20 @@
+[package]
+name = "pearl-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Script runtime adapters: Article 9 spawn/status/cancel/timeout/cleanup contract over Article 1 mechanical execution."
+
+[dependencies]
+pearl-core.workspace = true
+pearl-process-supervisor.workspace = true
+pearl-governance.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

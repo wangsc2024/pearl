@@ -1,0 +1,36 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "Implement pearl-router crate: the script-first routing engine (Article 1 in code). When a task needs execution, the router decides HOW to execute it. The decision tree is: (1) Check capability registry for a matching P0 mechanical capability, (2) If found, route to script runtime, (3) If not found, check precision classification, (4) Route to appropriate runtime based on P1/P2/P3 class. This crate also implements the Health Monitor with profile degradation, referencing daily_rust src/health/mod.rs pattern. The health monitor tracks failures, promotes/demotes profiles, and recovers stale locks.",
+  "status": "completed",
+  "steps": [
+    "Create crates/pearl-router/Cargo.toml depending on pearl-core (Clock, RuntimeProfile, PrecisionClass, TaskId), pearl-precision (PrecisionDecisionEngine), pearl-capabilities (CapabilityRegistry, RegisteredCapability), pearl-runtime (RuntimeAdapter, ScriptSpec), pearl-governance (CapabilityManifest, Runtime, ExecutionKind), serde, thiserror, chrono. Use workspace.dependencies.",
+    "Add pearl-router to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-router = { path = 'crates/pearl-router' } to [workspace.dependencies].",
+    "Create crates/pearl-router/src/lib.rs with module doc explaining Article 1 script-first routing: the router always checks for a mechanical capability before considering agent routing.",
+    "Define RoutingDecision enum: ScriptRoute { capability_id: String, runtime: Runtime, entrypoint: String }, AgentRoute { precision: PrecisionClass, reason: String }, Rejected { reason: String } (for when no suitable capability exists and no agent fallback is permitted).",
+    "Implement Router struct with route(task_requirements: &TaskRequirements, registry: &CapabilityRegistry) -> RoutingDecision. TaskRequirements includes: task_type, required_capabilities (Vec<String>), quality_spec, precision_override (Option<PrecisionClass>).",
+    "Implement the decision logic: first try find_mechanical in registry matching task_type, then fall back by precision class. P0 tasks MUST route to script (reject if no mechanical capability found). P1/P2/P3 may route to agents.",
+    "Create a health module. Implement HealthMonitor struct tracking: active_profile (RuntimeProfile), recent_failures (count with time decay), last_check (DateTime<Utc>). Methods: record_failure(task_id), record_success(task_id), check_profile_transition() -> Option<RuntimeProfile>, active_profile() -> RuntimeProfile.",
+    "Implement profile degradation logic: Normal -> Degraded when failure count >= threshold within decay window, Degraded -> Recovery when failures >= higher threshold, auto-recover to Normal when failure count drops to 0. Reference daily_rust health monitor pattern.",
+    "Implement HealthConfig struct: failure_threshold_degraded (u32), failure_threshold_recovery (u32), decay_window (TimeDelta), check_interval (TimeDelta).",
+    "Write tests: router routes deterministic task to script, router rejects P0 task with no mechanical capability, router falls back to agent for P3, health monitor degrades profile on repeated failures, health monitor recovers when failures clear, profile degradation is time-decayed.",
+    "Ensure cargo test --workspace passes, clippy -D warnings clean, fmt clean."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p pearl-router succeeds",
+    "All tests in pearl-router pass",
+    "Router routes P0 tasks to script runtime only",
+    "Router rejects P0 task when no mechanical capability exists",
+    "Health monitor degrades profile on repeated failures",
+    "Health monitor auto-recovers when failures clear",
+    "cargo clippy --workspace --all-targets -- -D warnings passes",
+    "cargo fmt --all --check passes"
+  ],
+  "verification": [
+    "cargo test -p pearl-router",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all --check"
+  ],
+  "blocked_reason": null,
+  "findings": "All 24 tests pass. Full workspace (404 tests) green. Clippy clean. Fmt clean. Constitution check passes. TaskId uses parse() not generate()."
+}

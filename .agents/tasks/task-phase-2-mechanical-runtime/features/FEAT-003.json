@@ -1,0 +1,35 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Implement pearl-capabilities crate: the Capability Manifest Registry. This is the runtime catalog that indexes all registered capabilities (from YAML manifests), enabling lookup by id, by type, by runtime, and by precision class. The registry loads from a directory of YAML manifests (like capabilities/ in the repo), validates each against Constitution rules, and provides query methods for the router to find matching capabilities. Reference: DDP workflows/index.yaml and the existing pearl-governance CapabilityManifest type.",
+  "status": "completed",
+  "steps": [
+    "Create crates/pearl-capabilities/Cargo.toml depending on pearl-core, pearl-governance (for CapabilityManifest, CapabilityType, Runtime, ExecutionKind), pearl-precision, serde, serde_yaml, thiserror. Use workspace.dependencies.",
+    "Add pearl-capabilities to workspace members in /projects/sandbox/pearl/Cargo.toml and add pearl-capabilities = { path = 'crates/pearl-capabilities' } to [workspace.dependencies].",
+    "Create crates/pearl-capabilities/src/lib.rs with module doc explaining this implements the capability registry that enables Article 1 script-first routing.",
+    "Implement CapabilityRegistry struct holding a Vec<RegisteredCapability> (manifest + metadata like file path, loaded_at timestamp, precision classification).",
+    "Implement RegisteredCapability struct: manifest (CapabilityManifest), source_path (Option<PathBuf>), precision_class (PrecisionClass from pearl-precision classification), registered_at (DateTime<Utc>).",
+    "Implement CapabilityRegistry::load_directory(path: &Path) -> Result<Self, RegistryError> that walks a directory recursively, loads all .yaml/.yml files as CapabilityManifest, classifies each with PrecisionDecisionEngine, and indexes them.",
+    "Implement query methods: find_by_id(&str) -> Option<&RegisteredCapability>, find_by_type(CapabilityType) -> Vec<&RegisteredCapability>, find_by_runtime(Runtime) -> Vec<&RegisteredCapability>, find_by_precision(PrecisionClass) -> Vec<&RegisteredCapability>, find_mechanical() -> Vec<&RegisteredCapability> (all P0 capabilities).",
+    "Implement register(manifest, source_path) for programmatic registration.",
+    "Implement validate_all() -> GateReport that runs the governance checks on every registered manifest and returns the combined report.",
+    "Write tests: load from a temp directory with multiple YAML manifests, query by type/runtime/precision, verify that load_directory skips non-YAML files, verify that malformed YAML reports errors without panicking.",
+    "Ensure cargo test --workspace passes, clippy -D warnings clean, fmt clean."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p pearl-capabilities succeeds",
+    "All tests in pearl-capabilities pass",
+    "Registry loads from directory and indexes capabilities",
+    "find_by_id returns the correct capability",
+    "find_mechanical returns only P0-classified capabilities",
+    "cargo clippy --workspace --all-targets -- -D warnings passes",
+    "cargo fmt --all --check passes"
+  ],
+  "verification": [
+    "cargo test -p pearl-capabilities",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo fmt --all --check"
+  ],
+  "blocked_reason": null,
+  "findings": "All 303 workspace tests pass (23 new in pearl-capabilities). Constitution gate passes (4 manifests inspected). Clippy clean. Fmt clean. The registry loads from the real capabilities/ directory and classifies all 3 manifests as P0. Used ClassificationInput::from_manifest_inferred for classification without an explicit QualitySpec."
+}
