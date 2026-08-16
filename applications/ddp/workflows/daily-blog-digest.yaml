@@ -1,0 +1,65 @@
+# daily_blog_digest -- fetch, check, push.
+#
+# Rung 2: mechanical workflow. Fetches from AlphaMatch Blog and 數位時代 BNext RSS/HTML,
+# formats a digest, verifies at least one source succeeded, then pushes via AgentFlow-Notify.
+#
+# Like pingtung-event-digest, splitting fetch → verify → push makes each claim checkable:
+# fetch is retryable (no side effect), verify ensures the digest is worth sending, and the
+# push is idempotent. Article 5 deduplication happens per topic per day, so the same sources
+# fetched again in a manual rerun would not duplicate the push.
+#
+# Unlike Pingtung (which requires ≥1 event), blog sources can gracefully fail (one site down
+# but the other up): verify checks ok_sources >= 1, which is the business rule "if both sites
+# are down, do not send an empty digest".
+
+# daily_blog_digest -- fetch, check, push.
+#
+# Rung 2: mechanical workflow. Fetches from AlphaMatch Blog and 數位時代 BNext RSS/HTML,
+# formats a digest, verifies at least one source succeeded, then pushes via AgentFlow-Notify.
+#
+# Like pingtung-event-digest, splitting fetch → verify → push makes each claim checkable:
+# fetch is retryable (no side effect), verify ensures the digest is worth sending, and the
+# push is idempotent. Article 5 deduplication happens per topic per day.
+
+name: ddp.daily-blog-digest
+description: Fetches blog articles from two sources, verifies at least one succeeded, then pushes the digest.
+
+steps:
+  - id: fetch
+    capability: script.fetch-blog-articles
+    step_type: run
+    timeout_secs: 120
+    input:
+      limit: 3
+    # The push depends on this being right, so it is declared load-bearing and verify is the gate.
+    exactness_required: true
+
+  - id: check
+    capability: verifier.task-result
+    step_type: verify
+    depends_on: [fetch]
+    timeout_secs: 30
+    input_from:
+      # The document produced by fetch.
+      result: steps.fetch.output
+    input:
+      # Ensure fetched successfully and got at least one article worth sending.
+      require_keys: [fetched, sources, digest_text]
+      non_empty: [digest_text]
+
+  - id: push
+    capability: effect.notify
+    step_type: effect
+    depends_on: [check, fetch]
+    timeout_secs: 150
+    input_from:
+      message: steps.fetch.output.digest_text
+    input:
+      title: 📰 每日 Blog 精選
+      priority: low
+      tags: [blog, digest, daily]
+      task_result: success
+
+budget:
+  max_steps: 8
+  max_llm_calls: 0

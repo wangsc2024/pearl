@@ -24,25 +24,28 @@ version: 1
 type: script
 kind: collector
 description: |
-  Fetches recent posts from the configured blog feeds. NOT IMPLEMENTED -- no entrypoint yet;
-  the feed list and selection rule come from DDP's tools/fetch_blog_articles.py.
+  Fetches recent posts from AlphaMatch Blog and 數位時代 BNext, formats a digest body.
 execution:
   kind: script
   runtime: python
+  entrypoint:
+    script: ../scripts/fetch_blog_articles.py
 quality:
-  # Deterministic in shape and not in content: the same call tomorrow returns different posts.
-  # Article 1's check reads this as "same input, same output", which a live feed cannot
-  # promise, so it is declared false even though no model is involved.
+  # Live feeds: the same request tomorrow returns different posts. Article 1 reads determinism
+  # as "same input, same output", which a live feed cannot promise, so this is false.
   deterministic: false
 risk:
-  # Reads the network and reports. The push is a separate capability, which is what keeps
-  # this one retryable.
+  # Reads the network and reports. The push is `effect.notify`, declared separately, which
+  # keeps this one retryable.
   side_effect: false
 platform:
   windows: true
   linux: true
+# Standard library only: two URLs fetched with retries + regex parsing, typically 5-30s.
+# Covers network delays and retry backoffs.
 timeout_seconds: 120
 retry:
+  # Task-level retry on top of the script's own. Safe because no side effect yet.
   max_attempts: 2
 
 ---

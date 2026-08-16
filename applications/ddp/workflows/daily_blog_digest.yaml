@@ -1,0 +1,33 @@
+name: ddp.daily-blog-digest
+description: Fetch recent articles and push a digest.
+steps:
+  - id: fetch
+    capability: script.fetch-blog-articles
+    step_type: run
+    timeout_secs: 120
+  - id: check
+    capability: verifier.task-result
+    step_type: verify
+    depends_on: [fetch]
+    timeout_secs: 30
+    input_from:
+      result: steps.fetch.output
+    input:
+      require_keys: [fetched, ok_sources]
+      non_empty: [digest_text]
+  - id: push
+    capability: effect.notify
+    step_type: effect
+    depends_on: [check, fetch]
+    timeout_secs: 30
+    input:
+      topic: PEARL_kiro
+      title: 科技文章日摘
+      priority: low
+      tags: [blog, digest]
+      task_result: success
+    input_from:
+      message: steps.fetch.output.digest_text
+budget:
+  max_steps: 8
+  max_llm_calls: 0
