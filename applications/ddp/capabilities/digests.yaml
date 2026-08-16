@@ -1,0 +1,78 @@
+# The digest automations, decomposed into collectors and one shared effect.
+#
+# In DDP each of these was a single shell that fetched, formatted, pushed a notification and
+# wrote a result. Four responsibilities in one place, and the notification was the one that
+# mattered most: because pushing was internal to the task, "did it notify?" could only be
+# answered by reading logs, which is exactly what `output_watchdog` was invented to do.
+#
+# Here the fetch is a capability and the push is `effect.notify`, wired by a workflow. Three
+# things follow that could not be true before:
+#
+#   1. The collector has no side effect, so it is free to retry.
+#   2. The push goes through the ledger's idempotency gate (Article 5), so a retry of the
+#      *task* cannot double-send.
+#   3. "Was this notification sent?" is a query over `effects`, not an inference from a log
+#      file -- which is what lets reconciliation be a query rather than a scraper.
+#
+# One collector per source rather than one parameterised fetcher: a source is not a parameter
+# when each needs its own parsing, its own failure modes and its own timeout. The digest
+# *shape* is shared, and that lives in the workflow.
+
+---
+id: script.fetch-blog-articles
+version: 1
+type: script
+kind: collector
+description: |
+  Fetches recent posts from the configured blog feeds. NOT IMPLEMENTED -- no entrypoint yet;
+  the feed list and selection rule come from DDP's tools/fetch_blog_articles.py.
+execution:
+  kind: script
+  runtime: python
+quality:
+  # Deterministic in shape and not in content: the same call tomorrow returns different posts.
+  # Article 1's check reads this as "same input, same output", which a live feed cannot
+  # promise, so it is declared false even though no model is involved.
+  deterministic: false
+risk:
+  # Reads the network and reports. The push is a separate capability, which is what keeps
+  # this one retryable.
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 120
+retry:
+  max_attempts: 2
+
+---
+id: script.fetch-pingtung-events
+version: 1
+type: script
+kind: collector
+description: |
+  Fetches Pingtung county's public event calendar and formats the upcoming ones as a digest.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/fetch_pingtung_events.py
+quality:
+  # A live calendar: the same request tomorrow returns different events, and "upcoming" is
+  # measured against the clock. Article 1's check reads determinism as "same input, same
+  # output", which no feed can promise -- so this is false despite no model being involved.
+  deterministic: false
+risk:
+  # Reads the feed and reports. The push is `effect.notify`, declared separately, which is
+  # what leaves this one free to retry.
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+# The county's site closes connections intermittently, so the script retries three times with
+# a two-second backoff of its own. The deadline has to cover that plus a 1.7 MB parse.
+timeout_seconds: 120
+retry:
+  # Task-level retry on top of the script's own, for the case where all three attempts fall
+  # inside one bad minute. Safe because nothing has been sent at this point.
+  max_attempts: 2

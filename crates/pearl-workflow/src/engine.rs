@@ -31,7 +31,7 @@ pub enum StepType {
 }
 
 /// A single step in a workflow definition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStep {
     /// Unique id for this step.
     pub id: String,
@@ -86,7 +86,7 @@ fn default_timeout_secs() -> u64 {
 }
 
 /// A declarative workflow definition parsed from YAML.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDef {
     /// Workflow name.
     pub name: String,
@@ -114,13 +114,23 @@ impl WorkflowDef {
             .iter()
             .map(|ws| {
                 let precision_class = match ws.step_type {
-                    StepType::Run => PrecisionClass::P0,
-                    StepType::Parallel => PrecisionClass::P0,
-                    StepType::Verify => PrecisionClass::P0,
+                    // P0 is a claim about *reasoning*, not about safety: it says a model must
+                    // not participate. A side-effecting step is no more agentic than any
+                    // other, so `effect` used to be classified P2 and that was wrong twice
+                    // over — it declared that a notification push may use a model, and
+                    // because `llm_step_count` counts every class above P0, it charged an
+                    // imaginary model call against `max_llm_calls`. A wholly mechanical
+                    // workflow with one push could not declare `max_llm_calls: 0`.
+                    //
+                    // What actually makes an effect step safe is elsewhere and unaffected:
+                    // `risk.side_effect` plus the idempotency key on its manifest (Article 5),
+                    // and a `verify` step when its result is load-bearing (SS 30).
+                    StepType::Run | StepType::Parallel | StepType::Verify | StepType::Effect => {
+                        PrecisionClass::P0
+                    }
                     // Planning is reasoning, so it is classified as such — which also makes it
                     // count against the plan's LLM budget rather than being free.
                     StepType::Plan => PrecisionClass::P1,
-                    StepType::Effect => PrecisionClass::P2,
                 };
                 let role = match ws.step_type {
                     StepType::Plan => StepRole::Plan,
@@ -282,6 +292,50 @@ steps:
       items: steps.collect.output.items
       whole: steps.collect.output
 "#;
+
+    /// A push is not a model call. Classifying `effect` as P2 charged one against the LLM
+    /// budget, so a wholly mechanical fetch-check-push workflow could not declare
+    /// `max_llm_calls: 0` — the number that says "nothing here reasons".
+    #[test]
+    fn an_effect_step_is_not_counted_as_a_model_call() {
+        let yaml = r#"
+name: mechanical-with-a-push
+steps:
+  - id: fetch
+    capability: script.fetch
+    step_type: run
+  - id: push
+    capability: effect.notify
+    step_type: effect
+    depends_on: [fetch]
+budget:
+  max_steps: 8
+  max_llm_calls: 0
+"#;
+        let def = WorkflowDef::from_yaml(yaml).unwrap();
+        let compiled = WorkflowEngine::new()
+            .compile_workflow(&def)
+            .expect("a workflow with no model in it must compile under max_llm_calls: 0");
+        assert_eq!(compiled.source_plan.llm_step_count(), 0);
+    }
+
+    /// The converse: a planning step does reason, and is counted.
+    #[test]
+    fn a_plan_step_is_counted_as_a_model_call() {
+        let yaml = r#"
+name: has-a-planner
+steps:
+  - id: decide
+    capability: agent.propose-plan
+    step_type: plan
+budget:
+  max_steps: 8
+  max_llm_calls: 0
+"#;
+        let def = WorkflowDef::from_yaml(yaml).unwrap();
+        let err = WorkflowEngine::new().compile_workflow(&def).unwrap_err();
+        assert!(err.to_string().contains("LLM"), "got {err}");
+    }
 
     #[test]
     fn wiring_parses_and_reaches_the_plan_step() {

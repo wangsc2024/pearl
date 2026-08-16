@@ -101,6 +101,12 @@ enum TaskCommand {
     Submit {
         /// Path to a task spec (YAML or JSON).
         file: PathBuf,
+        /// Leave the task in CREATED instead of admitting it to READY.
+        ///
+        /// Nothing will claim a held task. Useful to inspect what a spec produced before
+        /// letting a worker act on it.
+        #[arg(long)]
+        hold: bool,
     },
     /// Show a task with its runs and history.
     Inspect { task_id: String },
@@ -189,9 +195,9 @@ enum ScriptCommand {
         /// Optional JSON input payload.
         #[arg(long)]
         input: Option<String>,
-        /// Directory containing capability manifests.
+        /// Directory containing capability manifests. Repeatable: pass it once per tree.
         #[arg(long, default_value = "capabilities")]
-        capabilities_path: PathBuf,
+        capabilities_path: Vec<PathBuf>,
     },
 }
 
@@ -201,9 +207,9 @@ enum WorkflowCommand {
     Validate {
         /// Path to the workflow YAML file.
         file: PathBuf,
-        /// Directory containing capability manifests.
+        /// Directory containing capability manifests. Repeatable: pass it once per tree.
         #[arg(long, default_value = "capabilities")]
-        capabilities_path: PathBuf,
+        capabilities_path: Vec<PathBuf>,
     },
     /// Compile and execute a workflow.
     Run {
@@ -212,9 +218,9 @@ enum WorkflowCommand {
         /// Task id to record the run under. Defaults to a timestamped id.
         #[arg(long)]
         task_id: Option<String>,
-        /// Directory containing capability manifests.
+        /// Directory containing capability manifests. Repeatable: pass it once per tree.
         #[arg(long, default_value = "capabilities")]
-        capabilities_path: PathBuf,
+        capabilities_path: Vec<PathBuf>,
         /// Skip steps that already have a committed checkpoint.
         #[arg(long)]
         resume: bool,
@@ -239,9 +245,9 @@ enum VerifyCommand {
         /// The document, from a file.
         #[arg(long)]
         input_file: Option<PathBuf>,
-        /// Directory containing capability manifests.
+        /// Directory containing capability manifests. Repeatable: pass it once per tree.
         #[arg(long, default_value = "capabilities")]
-        capabilities_path: PathBuf,
+        capabilities_path: Vec<PathBuf>,
         /// Directory containing JSON Schemas.
         #[arg(long, default_value = "schemas")]
         schemas_path: PathBuf,
@@ -314,7 +320,8 @@ fn dispatch(cli: &Cli) -> Result<u8, Box<dyn std::error::Error>> {
 
 fn task(cli: &Cli, cmd: &TaskCommand) -> Result<u8, Box<dyn std::error::Error>> {
     match cmd {
-        TaskCommand::Submit { file } => {
+        TaskCommand::Submit { file, hold } => {
+            let hold = *hold;
             let source = std::fs::read_to_string(file)?;
             let parsed = TaskSpec::parse(&source)?;
 
@@ -331,13 +338,41 @@ fn task(cli: &Cli, cmd: &TaskCommand) -> Result<u8, Box<dyn std::error::Error>> 
             };
 
             let mut store = StateStore::open(&cli.db)?;
-            let record = store.create_task(submission, SystemClock.now())?;
+            let mut record = store.create_task(submission, SystemClock.now())?;
+
+            // Straight through PLANNING and PLANNED to READY, exactly as the daemon does for
+            // a scheduled occurrence and for the same reason: a spec-submitted task's plan
+            // was declared in its spec, so there is nothing left to plan. The states are
+            // still traversed because the machine forbids skipping them and the history
+            // should show what happened.
+            //
+            // Without this a submitted task sat in CREATED, which no worker can claim, so
+            // `task submit` produced something inert and the only way to run a task was to
+            // schedule it. `--hold` keeps the old behaviour for anyone who wants to inspect
+            // a task before it becomes claimable.
+            if !hold {
+                for state in [TaskState::Planning, TaskState::Planned, TaskState::Ready] {
+                    store.transition(
+                        &record.task_id,
+                        state,
+                        Some("submitted from a spec".into()),
+                        None,
+                        SystemClock.now(),
+                    )?;
+                }
+                record = store
+                    .get_task(&record.task_id)?
+                    .expect("just transitioned it");
+            }
 
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&record)?);
             } else {
                 println!("submitted {} in state {}", record.task_id, record.state);
                 println!("  trace_id: {}", record.trace_id);
+                if hold {
+                    println!("  held in {}; nothing will claim it", record.state);
+                }
             }
             Ok(exit::OK)
         }
@@ -859,11 +894,11 @@ fn script(cli: &Cli, cmd: &ScriptCommand) -> Result<u8, Box<dyn std::error::Erro
             input,
             capabilities_path,
         } => {
-            let registry = CapabilityRegistry::load_directory(capabilities_path)?;
+            let registry = CapabilityRegistry::load_directories(capabilities_path)?;
             let Some(capability) = registry.find_by_id(id) else {
                 eprintln!(
                     "capability '{id}' is not in {}",
-                    capabilities_path.display()
+                    describe_paths(capabilities_path)
                 );
                 return Ok(exit::ERROR);
             };
@@ -1023,7 +1058,7 @@ fn verify(cli: &Cli, cmd: &VerifyCommand) -> Result<u8, Box<dyn std::error::Erro
             if let Some(id) = verifier {
                 // A capability id resolves through the registry; anything else is taken as a
                 // path, so an ad-hoc script can be tried without registering it first.
-                let path = CapabilityRegistry::load_directory(capabilities_path)
+                let path = CapabilityRegistry::load_directories(capabilities_path)
                     .ok()
                     .and_then(|registry| {
                         registry
@@ -1160,7 +1195,7 @@ fn workflow(cli: &Cli, cmd: &WorkflowCommand) -> Result<u8, Box<dyn std::error::
                 }
             };
 
-            let registry = CapabilityRegistry::load_directory(capabilities_path)?;
+            let registry = CapabilityRegistry::load_directories(capabilities_path)?;
             let mut store = StateStore::open(&cli.db)?;
             let now = SystemClock.now();
 
@@ -1333,7 +1368,19 @@ type CompiledWorkflow = (
     pearl_plan_compiler::CompiledPlan,
 );
 
-fn compile(file: &Path, capabilities_path: &Path) -> Result<CompiledWorkflow, serde_json::Value> {
+/// Names the directories a lookup covered, for an error a reader can act on.
+fn describe_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn compile(
+    file: &Path,
+    capabilities_path: &[PathBuf],
+) -> Result<CompiledWorkflow, serde_json::Value> {
     let problem = |detail: String| {
         serde_json::json!({
             "file": file.display().to_string(),
@@ -1348,7 +1395,7 @@ fn compile(file: &Path, capabilities_path: &Path) -> Result<CompiledWorkflow, se
         pearl_workflow::WorkflowDef::from_yaml(&source).map_err(|e| problem(e.to_string()))?;
 
     let known: std::collections::HashSet<String> =
-        CapabilityRegistry::load_directory(capabilities_path)
+        CapabilityRegistry::load_directories(capabilities_path)
             .map(|registry| registry.iter().map(|c| c.manifest.id.clone()).collect())
             .unwrap_or_default();
     // A step is verified when a `verify` step depends on it. Only verify steps count: taking

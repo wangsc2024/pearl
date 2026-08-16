@@ -3,3 +3,9 @@
 *.db
 *.db-wal
 *.db-shm
+
+# Real credentials. `.env.example` is the tracked template; PEARL never loads either file
+# automatically, so this only protects against committing what you exported by hand.
+.env
+.env.*
+!.env.example

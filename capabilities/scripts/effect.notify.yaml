@@ -1,9 +1,25 @@
-# A side-effecting capability. Article 5 requires an idempotency key template so that
-# runtime retry cannot send the same notification twice.
+# The only capability in PEARL that talks to the outside world on purpose.
+#
+# Publishes to an AgentFlow-Notify hub, which owns the last mile: it fans one notification
+# out to its own claim/ack queue plus whatever Discord / LINE / webhook downstreams are
+# bound to the topic. PEARL does not know or care which channels a topic reaches, which is
+# the point -- adding a channel is a hub configuration change, not a PEARL change.
+#
+# Article 5 requires an idempotency key template so runtime retry cannot send the same
+# notification twice. Read the template as a claim about *what* is being deduplicated:
+# one notification, per topic, per day. Two different alerts about the same topic on the
+# same day therefore need distinct keys from their callers -- the reconciliation tasks pass
+# their own subject in place of a bare date for exactly this reason.
+#
+# The honest limit: the hub performs no deduplication of its own, so the ledger
+# (`StateStore::request_effect`) is the only gate, and it has a seam. If the POST succeeds
+# and the process dies before the effect is committed, the retry will send a second
+# notification. `max_attempts: 3` accepts that risk because a lost alert is worse than a
+# duplicated one; a capability where the reverse is true should declare `max_attempts: 1`.
 id: effect.notify
-version: 1
+version: 2
 type: tool
-description: Sends a notification to a channel.
+description: Publishes a notification through the AgentFlow-Notify hub.
 kind: effect
 execution:
   kind: script
@@ -11,16 +27,18 @@ execution:
   entrypoint:
     script: notify.py
 quality:
+  # Same input, different outcome: the hub may be asleep, rate limited, or suspended.
   deterministic: false
 risk:
   side_effect: true
   idempotency:
-    key_template: "ntfy:{channel}:{date}"
+    key_template: "notify:{topic}:{subject}:{date}"
 platform:
   windows: true
   linux: true
-timeout_seconds: 30
+# Render's free tier sleeps after ~15 idle minutes and cold-starts in 30-60 seconds, so the
+# script waits up to 120s. The capability's deadline has to sit above that or Article 9's
+# cancellation would fire on a hub that was merely waking up.
+timeout_seconds: 150
 retry:
-  # Retrying is safe only because the ledger deduplicates on the idempotency key first;
-  # without that gate this would have to be max_attempts: 1.
   max_attempts: 3

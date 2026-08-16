@@ -142,6 +142,7 @@ fn a_v1_database_is_upgraded_in_place_rather_than_rebuilt() {
                 capability: Some("script.task-score".into()),
                 assurance: vec![AssuranceStep::script("verifier.task-result")],
                 timeout_seconds: Some(30),
+                ..TaskPlan::empty()
             }),
             Utc::now(),
         )

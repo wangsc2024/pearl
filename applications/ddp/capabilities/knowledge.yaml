@@ -1,0 +1,36 @@
+# Capability manifests for knowledge-base maintenance.
+#
+# Ported from DDP's mechanical auto-tasks. What made them "mechanical" there was that they
+# spend no API tokens; what makes them mechanical *here* is the stronger claim Article 1
+# actually cares about -- same input, same output, with nothing for a model to decide.
+# Anything that failed that test did not come across as a script.
+
+---
+id: script.knowledge-health
+version: 1
+type: script
+kind: diagnostic
+description: Scores a knowledge tree by file freshness and index completeness.
+execution:
+  kind: script
+  runtime: python
+  entrypoint:
+    script: ../scripts/knowledge_health.py
+quality:
+  # File ages against thresholds, and a regex over a Markdown index. Article 1 forbids
+  # asking a model to do arithmetic it can only approximate.
+  #
+  # Determinism here is "same tree, same clock, same answer". The clock moves, so two runs a
+  # day apart legitimately differ; that is the input changing, not the function.
+  deterministic: true
+risk:
+  # Reads a directory and reports. The original wrote a state file; that was removed, which
+  # is what lets this stay side-effect free.
+  side_effect: false
+platform:
+  windows: true
+  linux: true
+timeout_seconds: 60
+retry:
+  # A read-only scan, so a retry is free and cannot double anything.
+  max_attempts: 2

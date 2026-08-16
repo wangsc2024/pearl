@@ -1,0 +1,58 @@
+# knowledge_hygiene -- ported from DDP's weekly knowledge health scan.
+#
+# The scan reports; this task is what makes the report mean something. `min_health_score` is
+# the bar, passed to the capability, and the assurance step asserts the capability's own
+# verdict about it. Without the assurance the score would be a number in a log that no state
+# transition depends on -- which is the shape Article 2 exists to reject.
+#
+# Cadence lives in the schedule, not here. The DDP original skipped when its last report was
+# under seven days old, because DDP's scheduler fired opportunistically; PEARL's states its
+# interval, so a weekly schedule *is* the seven-day gate and the script does not need to
+# second-guess it.
+id: ddp.knowledge-hygiene
+version: 1
+task_type: knowledge_hygiene
+description: |
+  Scores the knowledge tree's freshness and index completeness, and fails verification when
+  it drops below the declared bar.
+precision_class: p0
+quality:
+  # p0 requires this: the work is mechanical, so it is reproducible by construction.
+  deterministic_generation: true
+  # The result must be right -- a hygiene gate that might be wrong is not a gate.
+  exactness_required: true
+  # And a verifier can decide it mechanically, which is what lets the task auto-complete
+  # rather than waiting for a human (Article 2, Article 11).
+  deterministic_verification: true
+capability: script.knowledge-health
+timeout_seconds: 60
+
+# Which tree, and what counts as stale. The capability holds none of this, which is what lets
+# one scanner serve every knowledge tree instead of one scanner per tree.
+payload:
+  context_dir: context
+  skills_index: skills/SKILL_INDEX.md
+  stale_days: 7
+  critical_days: 30
+  # The bar. Chosen to match DDP's observed steady state rather than picked as a round
+  # number: below this, something has stopped being maintained.
+  min_health_score: 0.7
+
+assurance:
+  # Article 8: the capability generates the verdict, and something else checks it. The two
+  # being the same script is the failure mode this separation prevents.
+  - script: verifier.task-result
+    evidence_required: true
+    input:
+      require_keys: [scanned, health_score, healthy, total_context_files, thresholds]
+      types:
+        health_score: number
+        healthy: boolean
+        total_context_files: number
+        attention: array
+      expect:
+        # The scan ran, and the tree cleared its bar. `healthy` is the capability's own
+        # comparison against `min_health_score`; asserting it here is what turns the number
+        # into a pass or a fail.
+        scanned: true
+        healthy: true

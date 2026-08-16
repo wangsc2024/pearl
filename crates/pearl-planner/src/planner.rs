@@ -128,10 +128,7 @@ pub enum StepRole {
 }
 
 /// A single step in an execution plan.
-///
-/// Not `Eq`: `input` holds arbitrary JSON, and `serde_json::Value` is only `PartialEq` because
-/// floats are. Structural comparison is still available where it is wanted.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanStep {
     /// Unique identifier for this step within the plan.
     pub id: String,
@@ -253,7 +250,7 @@ impl Default for PlanBudget {
 }
 
 /// A complete execution plan ready for compilation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     /// The ordered steps of the plan.
     pub steps: Vec<PlanStep>,

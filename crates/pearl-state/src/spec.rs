@@ -25,6 +25,12 @@ pub struct TaskSpec {
     pub assurance: Vec<AssuranceStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    /// What to hand the capability on `PEARL_INPUT`.
+    ///
+    /// Declared in `schemas/task-spec-v1.json` from the start and dropped by this parser
+    /// until now, so a spec that set it was ignored without complaint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 impl TaskSpec {
@@ -116,6 +122,7 @@ impl TaskSpec {
                     capability: self.capability,
                     assurance: self.assurance,
                     timeout_seconds: self.timeout_seconds,
+                    payload: self.payload,
                 }),
         )
     }
