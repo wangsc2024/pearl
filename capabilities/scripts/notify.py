@@ -35,6 +35,8 @@ Script I/O Contract (SS26):
     AGENTFLOW_NOTIFY_ALLOW_ANON       '1' to post without a token (local hub only)
     AGENTFLOW_NOTIFY_TOPIC            default topic
     AGENTFLOW_NOTIFY_TIMEOUT_SECONDS  default 120
+    AGENTFLOW_CF_ACCESS_CLIENT_ID     Cloudflare Access service token id (both or neither)
+    AGENTFLOW_CF_ACCESS_CLIENT_SECRET Cloudflare Access service token secret (both or neither)
   stdout: machine JSON only, on the last line
   stderr: diagnostics
 
@@ -132,6 +134,29 @@ def main():
             2,
         )
 
+    # A hub behind Cloudflare Access needs a service token as well as the hub's own token:
+    # the first says which machine is calling, the second which publisher. A service token
+    # is two halves of one credential, and half of it is a configuration error rather than
+    # a reason to try anyway -- Access answers a request it cannot identify with a 302 to
+    # its login page, which urllib follows into HTML that carries no notification id. That
+    # is the failure this check exists to make loud: the notification would be lost, and
+    # the exit code would not say so. The names match the AgentFlow receiver script and
+    # Cordis, so one service token can be exported once for every client of the hub.
+    cf_client_id = os.environ.get("AGENTFLOW_CF_ACCESS_CLIENT_ID") or ""
+    cf_client_secret = os.environ.get("AGENTFLOW_CF_ACCESS_CLIENT_SECRET") or ""
+    if bool(cf_client_id) != bool(cf_client_secret):
+        missing = (
+            "AGENTFLOW_CF_ACCESS_CLIENT_SECRET"
+            if cf_client_id
+            else "AGENTFLOW_CF_ACCESS_CLIENT_ID"
+        )
+        fail(
+            f"{missing} is not set. A Cloudflare Access service token is both halves or "
+            "neither; sending one half would let Access redirect the publish to its login "
+            "page and lose the notification",
+            2,
+        )
+
     # An absent topic falls back; a topic that is *present and empty* does not. The two
     # are different mistakes: the first is "you did not choose", which the default answers,
     # and the second is "you chose nothing", which is a bug in the caller. Collapsing them
@@ -196,6 +221,9 @@ def main():
     )
     if token:
         request.add_header("Authorization", f"Bearer {token}")
+    if cf_client_id:
+        request.add_header("CF-Access-Client-Id", cf_client_id)
+        request.add_header("CF-Access-Client-Secret", cf_client_secret)
 
     print(f"POST {url} topic={topic} priority={priority} (key={key})", file=sys.stderr)
     try:
