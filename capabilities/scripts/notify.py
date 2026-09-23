@@ -217,7 +217,11 @@ def main():
         url,
         data=json.dumps(body).encode("utf-8"),
         method="POST",
-        headers={"Content-Type": "application/json"},
+        # urllib's default User-Agent ("Python-urllib/3.x") is a signature
+        # Cloudflare's Browser Integrity Check bans outright: the hub, now behind
+        # Cloudflare, answers 403 "error code: 1010" before Access is even
+        # consulted, so a correct service token still looks like an auth failure.
+        headers={"Content-Type": "application/json", "User-Agent": "pearl-notify/1.0"},
     )
     if token:
         request.add_header("Authorization", f"Bearer {token}")
