@@ -381,7 +381,9 @@ fn a_notification() -> serde_json::Value {
 /// one running locally — an earlier version of these tests passed for that reason, which
 /// made them assertions about the machine rather than about the script. Clearing the token
 /// variables matters for the same reason: `env` here is merged onto the parent process's,
-/// so an ambient `AGENTFLOW_NOTIFY_TOKEN` would otherwise decide the outcome.
+/// so an ambient `AGENTFLOW_NOTIFY_TOKEN` would otherwise decide the outcome. The
+/// Cloudflare Access variables are cleared for that same reason: a developer who has half
+/// a service token exported would otherwise see these cases exit 2.
 ///
 /// The consequence worth keeping in mind: a validation bug now shows up as exit 1
 /// ("unreachable") instead of exit 0, which is still distinguishable from the expected 2.
@@ -391,6 +393,8 @@ fn unreachable_hub() -> Vec<(&'static str, &'static str)> {
         ("AGENTFLOW_NOTIFY_ALLOW_ANON", "1"),
         ("AGENTFLOW_NOTIFY_TOKEN", ""),
         ("AGENTFLOW_NOTIFY_TIMEOUT_SECONDS", "5"),
+        ("AGENTFLOW_CF_ACCESS_CLIENT_ID", ""),
+        ("AGENTFLOW_CF_ACCESS_CLIENT_SECRET", ""),
     ]
 }
 
@@ -443,6 +447,77 @@ fn notify_refuses_to_publish_without_a_token_unless_anonymous_is_explicit() {
     assert!(error.contains("AGENTFLOW_NOTIFY_TOKEN"), "got {error}");
     // And it says how to opt out, because a local hub legitimately runs without auth.
     assert!(error.contains("ALLOW_ANON"), "got {error}");
+}
+
+/// The hub now sits behind Cloudflare Access, whose service token is two halves of one
+/// credential. Half of it is a configuration error and not a reason to try anyway: Access
+/// answers a request it cannot identify with a 302 to its login page, which `urllib`
+/// follows into HTML that carries no notification id. That is the exit 2 / exit 1
+/// distinction again -- there is nothing a retry could fix, and nothing was published.
+#[test]
+fn notify_refuses_half_a_cloudflare_access_service_token() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    for (present, missing) in [
+        (
+            "AGENTFLOW_CF_ACCESS_CLIENT_ID",
+            "AGENTFLOW_CF_ACCESS_CLIENT_SECRET",
+        ),
+        (
+            "AGENTFLOW_CF_ACCESS_CLIENT_SECRET",
+            "AGENTFLOW_CF_ACCESS_CLIENT_ID",
+        ),
+    ] {
+        let mut env = unreachable_hub();
+        env.retain(|(k, _)| *k != present);
+        env.push((present, "half-a-credential"));
+
+        let result = run_notify(a_notification(), &env);
+        assert_eq!(
+            result.exit_status,
+            RuntimeExitStatus::Exited { code: 2 },
+            "{present} without {missing} should be refused before any request"
+        );
+        let error = result.structured_output.as_ref().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains(missing),
+            "the error must name the half that is missing: {error}"
+        );
+    }
+}
+
+/// Both halves present is a configured environment, not an error: the script gets as far
+/// as the network, which is the observable difference from the half-configured case above.
+/// Whether the `CF-Access-Client-*` headers then satisfy Access is Access's answer to give,
+/// and needs a Cloudflare-proxied hostname rather than a unit test.
+#[test]
+fn notify_accepts_a_complete_cloudflare_access_service_token() {
+    if !python_usable() {
+        eprintln!("skipping: no usable Python interpreter");
+        return;
+    }
+    let mut env = unreachable_hub();
+    env.retain(|(k, _)| {
+        *k != "AGENTFLOW_CF_ACCESS_CLIENT_ID" && *k != "AGENTFLOW_CF_ACCESS_CLIENT_SECRET"
+    });
+    env.push(("AGENTFLOW_CF_ACCESS_CLIENT_ID", "an-id.access"));
+    env.push(("AGENTFLOW_CF_ACCESS_CLIENT_SECRET", "a-secret"));
+
+    let result = run_notify(a_notification(), &env);
+    assert_eq!(result.exit_status, RuntimeExitStatus::Exited { code: 1 });
+    assert!(
+        result.structured_output.as_ref().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("unreachable"),
+        "it should have tried: {:?}",
+        result.structured_output
+    );
 }
 
 /// The hub's `Topic` type accepts 1-64 characters of `A-Za-z0-9_-`. Checking it here means
